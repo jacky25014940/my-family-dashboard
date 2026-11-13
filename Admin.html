@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>裝置管理控制台 - Admin</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { background: #0f172a; color: #f8fafc; font-family: Arial, "Microsoft JhengHei", sans-serif; padding: 2vw; margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+        h1 { font-size: 2.3vh; color: #38bdf8; margin-bottom: 0.8vh; flex-shrink: 0; }
+        
+        .connection-bar { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1vh 1.2vw; margin-bottom: 1vh; display: flex; gap: 1vw; align-items: center; flex-wrap: wrap; flex-shrink: 0; font-size: 1.2vh; }
+        .connection-bar input { background: #0f172a; color: white; border: 1px solid #334155; border-radius: 6px; padding: 0.6vh 0.8vw; font-size: 1.2vh; }
+
+        .dashboard-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 1.5vw; align-items: start; flex: 1; min-height: 0; }
+        @media (max-width: 1024px) { .dashboard-layout { grid-template-columns: 1fr; overflow-y: auto; } }
+
+        .left-column { height: 100%; overflow-y: auto; padding-right: 0.5vw; }
+        .right-column { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+
+        .panel-box { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 1.5vh 1.5vw; margin-bottom: 1.2vh; }
+        .panel-title { font-size: 1.5vh; font-weight: bold; color: #38bdf8; margin-bottom: 1vh; display: flex; align-items: center; gap: 0.5vw; }
+
+        table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #334155; margin-top: 1vh; }
+        th, td { padding: 1.2vh 1.2vw; text-align: left; border-bottom: 1px solid #334155; font-size: 1.3vh; }
+        th { background: #334155; color: #93c5fd; font-weight: bold; }
+        tr:hover { background: #273548; }
+
+        .btn { background: #2563eb; color: white; border: none; padding: 0.7vh 1vw; border-radius: 6px; cursor: pointer; font-size: 1.2vh; font-weight: bold; transition: background 0.2s; }
+        .btn:hover { background: #3b82f6; }
+        .btn-danger { background: #dc2626; color: white; border: none; padding: 0.7vh 1vw; border-radius: 6px; cursor: pointer; font-size: 1.2vh; font-weight: bold; }
+        .btn-danger:hover { background: #b91c1c; }
+        .btn-warning { background: #eab308; color: #0f172a; border: none; padding: 0.7vh 1vw; border-radius: 6px; cursor: pointer; font-size: 1.2vh; font-weight: bold; }
+        
+        input, select { background: #0f172a; color: white; border: 1px solid #334155; border-radius: 6px; padding: 0.7vh 0.8vw; font-size: 1.2vh; }
+        .badge { padding: 0.3vh 0.6vw; border-radius: 4px; font-weight: bold; font-size: 1.1vh; }
+        .badge.online { background: #166534; color: #4ade80; }
+        .badge.offline { background: #475569; color: #94a3b8; }
+        .unbound { color: #64748b; font-style: italic; }
+    </style>
+</head>
+
+<body>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1vh; flex-shrink: 0;">
+        <h1>🛡️ 裝置管理控制台 (Admin Panel - 多房動態監控版)</h1>
+        <div style="font-size: 1.5vh; color: #93c5fd;">系統時間 <span id="sys-clock" style="font-weight: bold; color: #38bdf8;"></span></div>
+    </div>
+
+    <div class="connection-bar">
+        <span>🔗 伺服器連線設定：</span>
+        <!-- 💡 改用標準 select 下拉選單，點擊時保證兩個選項都在 -->
+        <select id="serverSelect" onchange="document.getElementById('serverIpInput').value = this.value;" style="background: #0f172a; color: white; border: 1px solid #334155; border-radius: 6px; padding: 0.6vh 0.8vw; font-size: 1.2vh;">
+            <option value="">-- 快速切換預設伺服器 --</option>
+            <option value="titan-family-dashboard-poc.onrender.com">Render 雲端正式站 (WSS)</option>
+            <option value="taotaohome.tplinkdns.com:3000">台北taotaoHome (WS)</option>
+        </select>
+
+        <span>自訂 IP：</span>
+        <input id="serverIpInput" placeholder="例如: 192.168.x.x:3000" style="flex: 2; min-width: 180px;">
+
+        <span>管理員金鑰 (Key)：</span>
+        <input id="adminKeyInput" type="password" placeholder="Admin Secret Key" style="flex: 1; min-width: 130px;">
+        <button class="btn" onclick="saveConfigAndReconnect()">💾 儲存並連線</button>
+        <span id="connStatus" style="font-weight: bold; color: #fbbf24; margin-left: auto;">未連線</span>
+    </div>
+
+    <div class="dashboard-layout">
+        
+        <div class="left-column">
+            
+            <div class="panel-box" style="border-left: 5px solid #38bdf8;">
+                <div class="panel-title">🌐 遠端伺服器與 IP 派發設定</div>
+                <div style="display: flex; align-items: center; gap: 1vw; flex-wrap: wrap;">
+                    <input id="adminServerIpInput" placeholder="通知電視切換的新 IP" style="flex: 1; min-width: 200px;">
+                    <button class="btn" onclick="adminPushServerIpToTv()">發送指令讓電視切換 IP</button>
+                    <button class="btn" style="background: #3b82f6;" onclick="manualReconnect()">🔄 重新整理連線</button>
+                </div>
+            </div>
+
+            <div class="panel-box" style="border-left: 5px solid #2563eb;">
+                <div class="panel-title">📺 監控電視與遠端控制</div>
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1vw;">
+                    <div style="display: flex; align-items: center; gap: 1vw;">
+                        <span>目標電視：</span>
+                        <select id="tvSelect" onchange="switchTargetTv(this.value)" style="width: auto; max-width: 26rem; min-width: 10rem;">
+                            <option value="">目前無電視在線</option>
+                        </select>
+                        <span id="dashboardBadge" class="badge offline">OFFLINE</span>
+                    </div>
+                    <div style="display: flex; gap: 0.8vw; align-items: center;">
+                        <button class="btn" style="background: #2563eb;" onclick="adminClearIcsCache()">🗑️ 清除快取並強制同步</button>
+                        <button class="btn-warning" onclick="forceRestartDashboard()">強制重啟當前電視</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel-box" style="border-left: 5px solid #f97316;">
+                <div class="panel-title">🚀 事件與外送模擬控制 (Events & Delivery)</div>
+                
+                <div style="font-size: 1.1vh; color: #94a3b8; margin-bottom: 0.6vh;">交通路況快捷回報：</div>
+                <div style="display: flex; gap: 0.8vw; margin-bottom: 1.2vh; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 10px; align-items: center; width: 100%;">
+                        <input type="text" id="trafficInput" placeholder="請輸入自訂路況（例如：國道順暢、環東車多）..." style="flex: 1; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+                        <button onclick="adminSendTraffic(document.getElementById('trafficInput').value)" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer;">發送路況</button>
+                        <button id="adminClearTraffic" onclick="adminClearTraffic()" style="background-color: #dc2626; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer;">清除交通</button>
+                    </div>
+                </div>
+
+                <div style="font-size: 1.1vh; color: #94a3b8; margin-bottom: 0.6vh;">外送與生活事件：</div>
+                <div>
+                    <button class="btn" style="background: #2563eb; width: 100%; padding: 1vh; font-size: 1.2vh;" onclick="adminSendDeliveryOrder()">🛵 發送外送訂單需求</button>
+                </div>
+            </div>
+
+            <!-- 📋 線上裝置狀態與解除管理 -->
+            <div class="panel-box">
+                <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1vw;">
+                    <span>📋 線上裝置狀態與解除管理</span>
+                    <div style="display: flex; gap: 1.5vw; font-size: 1.1vh; font-weight: normal;">
+                        <span id="adminGoogleStatus" style="color: #94a3b8;">🟢 Google 曆: 檢查中...</span>
+                        <span id="adminIosStatus" style="color: #94a3b8;">🟢 iOS 曆: 檢查中...</span>
+                    </div>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>裝置編號</th>
+                            <th>狀態</th>
+                            <th>名稱</th>
+                            <th>憑證</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="deviceTableBody">
+                        <tr><td colspan="5" style="text-align:center; color:#94a3b8;">載入中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+        </div>
+
+        <div class="right-column">
+            <div class="panel-box" style="height: 100%; display: flex; flex-direction: column; margin-bottom: 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1vh; flex-shrink: 0;">
+                    <div class="panel-title" style="margin-bottom: 0;">🖥️ Console & TV Log</div>
+                    <button class="btn" style="padding: 0.3vh 0.8vw; font-size: 1.1vh; background: #475569;" onclick="clearTvLogBox()">清除畫面</button>
+                </div>
+                <div id="adminTvLogBox" style="background:#000; color:#0f0; flex: 1; min-height: 0; overflow-y:auto; padding:10px; font-family:monospace; font-size: 1.5vh; border-radius: 6px; border: 1px solid #334155; line-height: 1.4;"></div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        let currentSelectedTvId = null;
+        let ws = null;
+        let phonePingTimer = null;
+
+        function startPhonePing() {
+            if (phonePingTimer) clearInterval(phonePingTimer);
+            phonePingTimer = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: "ping" }));
+                }
+            }, 15000); // 每 15 秒發送一次心跳
+        }
+
+        setInterval(() => {
+            const clock = document.getElementById('sys-clock');
+            if (clock) clock.innerText = new Date().toLocaleString();
+        }, 1000);
+
+        function clearTvLogBox() {
+            document.getElementById('adminTvLogBox').innerHTML = '';
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedIp = localStorage.getItem('admin_server_ip') || window.location.host;
+            const savedKey = localStorage.getItem('admin_secret_key') || 'admin_secure_key_2026';
+
+            document.getElementById('serverIpInput').value = savedIp;
+            document.getElementById('adminKeyInput').value = savedKey;
+            document.getElementById('adminServerIpInput').value = savedIp.split(':')[0];
+
+            initAdminWebSocket();
+        });
+
+        window.addEventListener('unhandledrejection', function(event) {
+            if (event.reason && event.reason.message && event.reason.message.includes('message channel closed')) {
+                event.preventDefault();
+            }
+        });
+
+        function saveConfigAndReconnect() {
+            const ip = document.getElementById('serverIpInput').value.trim();
+            const key = document.getElementById('adminKeyInput').value.trim();
+            if (!ip || !key) {
+                alert("請填寫完整的 Server IP 與 Admin Key！");
+                return;
+            }
+            localStorage.setItem('admin_server_ip', ip);
+            localStorage.setItem('admin_secret_key', key);
+            initAdminWebSocket();
+        }
+
+        // 💡 修改後的 initAdminWebSocket：支援 wss/ws 自動容錯與字串清洗
+        function initAdminWebSocket() {
+            if (ws) {
+                try { ws.close(); } catch (e) {}
+            }
+
+            const serverIp = document.getElementById('serverIpInput').value.trim() || window.location.host;
+            const secretKey = document.getElementById('adminKeyInput').value.trim();
+
+            // 💡 嚴格字串清洗：自動移除不小心多打的 http://, https://, ws://, wss:// 還有結尾斜線
+            let cleanIp = serverIp
+                .replace(/^https?:\/\//i, '')
+                .replace(/^wss?:\/\//i, '')
+                .replace(/\/+$/, '');
+
+            document.getElementById('connStatus').textContent = '連線中 (嘗試 WSS)...';
+            document.getElementById('connStatus').style.color = '#fbbf24';
+
+            // 💡 策略：優先嘗試安全的 wss://（適合 Render 等雲端服務），若失敗則降級嘗試 ws://
+            let primaryUrl = "wss://" + cleanIp;
+            let secondaryUrl = "ws://" + cleanIp;
+
+            tryConnectAdminWithFallback(primaryUrl, secondaryUrl, secretKey, 0);
+        }
+
+        // 💡 遞迴嘗試連線輔助函式 (WSS 失敗自動降級 WS)
+        function tryConnectAdminWithFallback(primaryUrl, secondaryUrl, secretKey, attempt) {
+            let targetUrl = (attempt === 0) ? primaryUrl : secondaryUrl;
+            let tempWs;
+
+            try {
+                tempWs = new WebSocket(targetUrl);
+            } catch (e) {
+                if (attempt === 0) {
+                    tryConnectAdminWithFallback(primaryUrl, secondaryUrl, secretKey, 1);
+                } else {
+                    document.getElementById('connStatus').textContent = '連線失敗';
+                    document.getElementById('connStatus').style.color = '#ef4444';
+                }
+                return;
+            }
+
+            let isConnected = false;
+
+            tempWs.onopen = () => {
+                isConnected = true;
+                ws = tempWs; // 賦值給全域 ws
+                startPhonePing();
+                document.getElementById('connStatus').textContent = '已連線 (' + (targetUrl.startsWith('wss') ? 'WSS' : 'WS') + ')';
+                document.getElementById('connStatus').style.color = '#4ade80';
+                
+                ws.send(JSON.stringify({ type: "register_admin", key: secretKey }));
+                ws.send(JSON.stringify({ type: "admin_query_room_status", targetDashboard: currentSelectedTvId || 'demo_tv' }));
+                querySelectedRoomStatus();
+            };
+
+            tempWs.onerror = () => {
+                if (!isConnected) {
+                    try { tempWs.close(); } catch (e) {}
+                }
+            };
+
+            tempWs.onclose = () => {
+                if (!isConnected) {
+                    if (attempt === 0) {
+                        console.warn("[Admin] WSS 連線失敗 (可能為 301 或不支援)，自動降級嘗試 WS...");
+                        document.getElementById('connStatus').textContent = '連線中 (嘗試 WS)...';
+                        tryConnectAdminWithFallback(primaryUrl, secondaryUrl, secretKey, 1);
+                    } else {
+                        document.getElementById('connStatus').textContent = '連線失敗';
+                        document.getElementById('connStatus').style.color = '#ef4444';
+                    }
+                    return;
+                }
+
+                if (phonePingTimer) {
+                    clearInterval(phonePingTimer);
+                    phonePingTimer = null;
+                }
+                document.getElementById('connStatus').textContent = '與伺服器斷線';
+                document.getElementById('connStatus').style.color = '#ef4444';
+            };
+
+            tempWs.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'pong') {
+                        // 心跳回應，無需處理
+                        return;
+                    }   
+                    if (data.type === 'auth_error') {
+                        alert(data.message);
+                        document.getElementById('connStatus').textContent = '認證失敗';
+                        document.getElementById('connStatus').style.color = '#ef4444';
+                        return;
+                    }
+                    if (data.type === 'admin_status_sync') {
+                        renderTable(data.statuses, data.names, data.tokens);
+                        updateTvSelectOptions(data.activeDashboards || [], data.dashboardStatus);
+                    }
+                    if (data.type === 'room_status_response') {
+                        if (data.roomId === currentSelectedTvId) {
+                            let statuses = {};
+                            let names = {};
+                            let tokens = {};
+                            
+                            if (data.phoneSlots) {
+                                for (let id in data.phoneSlots) {
+                                    let slot = data.phoneSlots[id];
+                                    statuses[id] = slot.status || 'offline';
+                                    names[id] = slot.name || '';
+                                    tokens[id] = !!slot.token;
+                                }
+                            }
+                            
+                            renderTable(statuses, names, tokens);
+                            renderRoomIcsStatus(data.googleIcsUrl, data.iosIcsUrl);
+                        }
+                    }
+                    if (data.type === 'admin_tv_log') {
+                        const logContainer = document.getElementById('adminTvLogBox');
+                        if (logContainer) {
+                            const logItem = document.createElement('div');
+                            logItem.textContent = `[${data.time}] [${data.dashboardId || 'TV'}] ${data.message}`;
+                            logContainer.appendChild(logItem);
+                            if (logContainer.children.length > 150) logContainer.removeChild(logContainer.firstChild);
+                            logContainer.scrollTop = logContainer.scrollHeight;
+                        }
+                    }
+                } catch (err) {}
+            };
+        }
+
+        // 💡 恢復渲染裝置表格與解除按鈕
+        function renderTable(statuses, names, tokens) {
+            const tbody = document.getElementById('deviceTableBody');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            
+            if (!statuses || Object.keys(statuses).length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:#94a3b8;">目前無在線裝置</td></tr>`;
+                return;
+            }
+
+            Object.keys(statuses).forEach(id => {
+                const status = statuses[id];
+                const name = names[id] || '';
+                const hasToken = !!tokens[id];
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td style="font-weight:bold; color:#38bdf8;">${id}</td>
+                    <td><span class="badge ${status}">${status.toUpperCase()}</span></td>
+                    <td>${name || '<span class="unbound">未命名</span>'}</td>
+                    <td>${hasToken ? '<span style="color:#4ade80;">已綁定憑證</span>' : '<span class="unbound">無憑證</span>'}</td>
+                    <td><button class="btn-danger" onclick="forceUnregister('${id}')" style="padding: 0.4vh 0.8vw; font-size: 1.1vh;">解除</button></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function forceUnregister(deviceId) {
+            const secretKey = document.getElementById('adminKeyInput').value.trim();
+            if (confirm(`確定要強制解除 ${deviceId} 嗎？`)) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'admin_force_unregister', targetDeviceId: deviceId, key: secretKey, targetDashboard: currentSelectedTvId }));
+                }
+            }
+        }
+
+        function renderRoomIcsStatus(googleUrl, iosUrl) {
+            const googleEl = document.getElementById("adminGoogleStatus");
+            const iosEl = document.getElementById("adminIosStatus");
+
+            if (googleEl) {
+                if (googleUrl && googleUrl.trim() !== "") {
+                    googleEl.innerHTML = `<span style="color: #4ade80;">🟢 Google 曆: 已訂閱</span>`;
+                    googleEl.title = googleUrl;
+                } else {
+                    googleEl.innerHTML = `<span style="color: #94a3b8;">⚪ Google 曆: 未設定</span>`;
+                    googleEl.title = "";
+                }
+            }
+
+            if (iosEl) {
+                if (iosUrl && iosUrl.trim() !== "") {
+                    iosEl.innerHTML = `<span style="color: #4ade80;">🟢 iOS 曆: 已訂閱</span>`;
+                    iosEl.title = iosUrl;
+                } else {
+                    iosEl.innerHTML = `<span style="color: #94a3b8;">⚪ iOS 曆: 未設定</span>`;
+                    iosEl.title = "";
+                }
+            }
+        }
+
+        function querySelectedRoomStatus() {
+            if (!currentSelectedTvId) return;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "admin_query_room_status",
+                    targetDashboard: currentSelectedTvId
+                }));
+            }
+        }
+
+        function adminPushServerIpToTv() {
+            const input = document.getElementById("adminServerIpInput");
+            const ipVal = input ? input.value.trim() : "";
+            const secretKey = document.getElementById('adminKeyInput').value.trim();
+            if (!ipVal) { alert("請先輸入要派發給電視的 Server IP！"); return; }
+            if (!currentSelectedTvId) { alert("目前沒有選中任何在線的電視目標！"); return; }
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "config_update_server_ip",
+                    targetDashboard: currentSelectedTvId,
+                    serverIp: ipVal,
+                    key: secretKey
+                }));
+                alert(`已透過 Admin 發送指令：通知電視 [${currentSelectedTvId}] 切換 IP 至 ${ipVal}`);
+            } else {
+                alert("管理控制台尚未連線至伺服器！");
+            }
+        }
+
+        function adminClearIcsCache() {
+            const secretKey = document.getElementById('adminKeyInput').value.trim();
+            if (!currentSelectedTvId) { 
+                alert("目前沒有選中任何在線的電視目標！"); 
+                return; 
+            }
+            if (confirm(`確定要強制清除電視 [${currentSelectedTvId}] 的 ICS 伺服器快取並重新抓取嗎？`)) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: "admin_clear_ics_cache",
+                        targetDashboard: currentSelectedTvId,
+                        key: secretKey
+                    }));
+                    alert(`已發送指令：清除電視 [${currentSelectedTvId}] 的快取。`);
+                } else {
+                    alert("管理控制台尚未連線至伺服器！");
+                }
+            }
+        }
+        
+        function forceRestartDashboard() {
+            const secretKey = document.getElementById('adminKeyInput').value.trim();
+            if (confirm('確定要強制重啟電視端 Dashboard 嗎？')) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'admin_force_restart_dashboard', key: secretKey }));
+                }
+            }
+        }
+
+        function updateTvSelectOptions(activeDashboards, dashboardStatus) {
+            const selectEl = document.getElementById('tvSelect');
+            if (!selectEl) return;
+            const currentVal = selectEl.value;
+            selectEl.innerHTML = '';
+
+            if (activeDashboards.length === 0) {
+                selectEl.innerHTML = `<option value="">目前無電視在線</option>`;
+                currentSelectedTvId = null;
+                renderTable({}, {}, {});
+                renderRoomIcsStatus("", "");
+            } else {
+                activeDashboards.forEach(tvId => {
+                    const opt = document.createElement('option');
+                    opt.value = tvId;
+                    opt.textContent = `電視端: ${tvId}`;
+                    if (tvId === currentVal || tvId === currentSelectedTvId) opt.selected = true;
+                    selectEl.appendChild(opt);
+                });
+                if (!currentSelectedTvId || !activeDashboards.includes(currentSelectedTvId)) {
+                    currentSelectedTvId = activeDashboards[0];
+                    selectEl.value = currentSelectedTvId;
+                }
+                querySelectedRoomStatus();
+            }
+
+            const dashBadge = document.getElementById('dashboardBadge');
+            if (dashBadge) {
+                dashBadge.textContent = dashboardStatus.toUpperCase();
+                dashBadge.className = `badge ${dashboardStatus}`;
+            }
+        }
+
+        function adminSendTraffic(text) {
+            if (!currentSelectedTvId) { alert("目前沒有選中任何在線的電視目標！"); return; }
+            const message = (text || "").trim();
+            if (!message) {
+                alert("請輸入欲回報的交通狀況內容！");
+                return;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "update_traffic_status",
+                    targetDashboard: currentSelectedTvId,
+                    message: message
+                }));
+            }
+        }
+
+        function adminClearTraffic() {
+            if (!currentSelectedTvId) { alert("currentSelectedTvId 為空"); return; }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "clear_traffic_override",
+                    targetDashboard: currentSelectedTvId,
+                    message:""
+                }));
+                document.getElementById('trafficInput').value = "";
+            } else {
+                alert("WebSocket 尚未連線！");
+            }
+        }
+
+        function adminSendDeliveryOrder() {
+            const secretKey = document.getElementById('adminKeyInput').value.trim();
+            if (!currentSelectedTvId) { alert("目前沒有選中任何在線的電視目標！"); return; }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "delivery_order",
+                    targetDashboard: currentSelectedTvId,
+                    title: "外送即將送達",
+                    text: "預計 1 分鐘內到達",
+                    key: secretKey
+                }));
+            } else {
+                alert("管理控制台尚未連線至伺服器！");
+            }
+        }
+
+        function switchTargetTv(tvId) { 
+            currentSelectedTvId = tvId; 
+            querySelectedRoomStatus();
+        }
+
+        function manualReconnect() { initAdminWebSocket(); }
+
+        setInterval(() => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" })); }, 30000);
+    </script>
+</body>
+</html>
