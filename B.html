@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulated Phone Console</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+        body { background: #07111f; color: #f8fafc; font-family: Arial, "Microsoft JhengHei", sans-serif; }
+        .app { width: 100vw; height: 100vh; display: grid; grid-template-rows: 6vh 1fr 4vh; }
+        
+        .header { background: #102d4d; display: flex; align-items: center; justify-content: space-between; padding: 0 2vw; border-bottom: 1px solid #294765; }
+        .title { font-size: 2vh; font-weight: bold; }
+
+        .conn-badge { font-size: 1.5vh; font-weight: bold; padding: 0.4vh 1vw; border-radius: 6px; background: #334155; color: #f8fafc; }
+        .conn-badge.connected { background: #166534; color: #4ade80; }
+        .conn-badge.disconnected { background: #991b1b; color: #fca5a5; }
+
+        .main { display: grid; grid-template-rows: 62% 38%; gap: 1vh; padding: 1vh 1.5vw; min-height: 0; overflow-y: auto; }
+
+        .core-panels-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1vw; height: 100%; min-height: 0; }
+        .panel { background: #101d2d; border: 1px solid #263e57; border-radius: 8px; padding: 1vh 1.2vw; display: flex; flex-direction: column; gap: 0.8vh; height: 100%; min-height: 0; }
+        .panel-title { color: #93c5fd; font-size: 1.4vh; font-weight: bold; margin-bottom: 0; flex-shrink: 0; }
+        
+        .field { display: flex; flex-direction: column; gap: 0.3vh; flex-shrink: 0; }
+        label { color: #94a3b8; font-size: 1.1vh; }
+        input, textarea, select { background: #020617; color: white; border: 1px solid #334155; border-radius: 6px; padding: 0.8vh; font-size: 1.2vh; font-family: inherit; width: 100%; }
+        input:disabled, textarea:disabled { background: #1e293b; color: #64748b; cursor: not-allowed; }
+        
+        textarea, .expand-input { flex: 1; min-height: 0; }
+        textarea { resize: none; overflow-y: auto; line-height: 1.3; }
+        
+        button { background: #2563eb; color: white; border: 0; border-radius: 6px; padding: 0.8vh 1vw; font-size: 1.1vh; cursor: pointer; transition: background 0.2s; font-weight: bold; flex-shrink: 0; }
+        button:hover { background: #3b82f6; }
+        button:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+        .secondary { background: #334155; }
+        .secondary:hover { background: #475569; }
+        .danger { background: #991b1b; }
+        .danger:hover { background: #b91c1c; }
+
+        .unified-bottom-card { background: #0c1a2c; border: 1px solid #263e57; border-radius: 8px; padding: 0.8vh 1vw; display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 0.8vw; height: 100%; min-height: 0; align-content: stretch; }
+        .column-group { display: flex; flex-direction: column; gap: 0.6vh; background: #101d2d; padding: 0.6vh 0.8vw; border-radius: 6px; border: 1px solid #1e3a60; justify-content: space-between; height: 100%; }
+        
+        .status-col-group { display: flex; flex-direction: column; gap: 0.4vh; width: 100%; }
+        .status-row { display: flex; align-items: center; justify-content: flex-start; gap: 0.8vw; background: #0c1a2c; padding: 0.6vh 0.8vw; border-radius: 6px; border: 1px solid #1e3a60; font-size: 1.1vh; color: #cbd5e1; }
+        .status-row.active { border-color: #166534; background: rgba(22, 101, 52, 0.15); color: #4ade80; }
+        @media (max-width: 768px) {
+            html, body { overflow: auto; height: auto; }
+            .app { height: auto; min-height: 100vh; grid-template-rows: auto 1fr auto; overflow: visible; padding: 1vh 2vw; }
+            .header { padding: 1vh 2vw; border-radius: 8px; margin-bottom: 1vh; }
+            .main { display: flex; flex-direction: column; gap: 2vh; height: auto; overflow: visible; padding-bottom: 4vh; padding-left: 0; padding-right: 0; }
+            .core-panels-grid { display: flex; flex-direction: column; gap: 2vh; height: auto; }
+            .panel { height: auto; min-height: auto; background: #132743; border: 1px solid #334155; border-radius: 12px; padding: 1.5vh 3vw; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2); }
+            .panel-title { font-size: 1.6vh; border-bottom: 1px solid #1e3a60; padding-bottom: 0.8vh; margin-bottom: 1vh; }
+            .unified-bottom-card { display: flex; flex-direction: column; gap: 2vh; height: auto; background: transparent; border: none; padding: 0; }
+            .column-group { height: auto; background: #132743; border: 1px solid #334155; border-radius: 12px; padding: 1.5vh 3vw; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2); }
+            input, textarea, select { padding: 1.2vh 1vh; font-size: 1.4vh; }
+            button { padding: 1.2vh 1vw; font-size: 1.3vh; }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="app">
+        <header class="header">
+            <div class="title" id="deviceTitle">📱 模擬手機 (未註冊)</div>
+            <div style="display: flex; align-items: center; gap: 1.5vw;">
+                <span id="tvRoomDisplay" style="font-size: 1.5vh; color: #38bdf8;">目標 TV 房間：未連線</span>
+                <span id="topConnText" class="conn-badge disconnected">disconnected</span>
+            </div>
+        </header>
+
+        <main class="main">
+            <!-- 上方：核心 3 個功能框框 -->
+            <div class="core-panels-grid">
+                <!-- MESSAGE -->
+                <section class="panel">
+                    <div class="panel-title">💬 傳送即時訊息</div>
+                    <div class="field" style="flex:1; display:flex; flex-direction:column; min-height:0;">
+                        <label>訊息內容</label>
+                        <textarea id="message" placeholder="輸入要傳到 Dashboard 的訊息..."></textarea>
+                    </div>
+                    <div><button onclick="sendMessage()" style="width:100%;">發送訊息</button></div>
+                </section>
+
+                <!-- CALENDAR -->
+                <section class="panel">
+                    <div class="panel-title">📅 傳送行事曆行程</div>
+                    <div class="field" style="flex:1; display:flex; flex-direction:column; gap: 0.6vh; min-height:0;">
+                        <label>行程標題</label>
+                        <textarea id="calendarTitle" class="expand-input" placeholder="請輸入行程標題..." style="resize: none;"></textarea>
+                        <label>開始日期與時間</label>
+                        <div style="display: flex; flex-direction: column; gap: 0.6vh; width: 100%;">
+                            <input id="calDate" type="date" style="width: 100%; padding: 1vh; background: #020617; color: white; border: 1px solid #334155; border-radius: 6px; font-size: 1.4vh;">
+                            <div style="display: flex; gap: 1vw; align-items: center; width: 100%;">
+                                <select id="calHour" style="flex: 1; text-align: center; background: #020617; color: white; border: 1px solid #334155; border-radius: 6px; padding: 1vh; font-size: 1.4vh;"></select>
+                                <span style="color: #94a3b8; font-weight: bold; font-size: 1.6vh;">:</span>
+                                <select id="calMinute" style="flex: 1; text-align: center; background: #020617; color: white; border: 1px solid #334155; border-radius: 6px; padding: 1vh; font-size: 1.4vh;"></select>
+                            </div>
+                        </div>
+                    </div>
+                    <div><button onclick="sendCalendar()" style="width:100%;">發送行事曆</button></div>
+                </section>
+
+                <!-- TODO 提醒事項 -->
+                <section class="panel">
+                    <div class="panel-title">📝 傳送提醒事項</div>
+                    <div class="field" style="flex:1; display:flex; flex-direction:column; min-height:0;">
+                        <label>提醒內容</label>
+                        <textarea id="todoText" placeholder="請輸入提醒內容..."></textarea>
+                    </div>
+                    <div><button onclick="sendTodo()" style="width:100%;">發送提醒</button></div>
+                </section>
+            </div>
+
+            <!-- 下方：整合區塊 -->
+            <div class="unified-bottom-card">
+                
+                <!-- 欄位一：帳號註冊與時區偏移 -->
+                <div class="column-group">
+                    <div style="font-size: 1.2vh; font-weight: bold; color: #93c5fd;">🔐 帳號註冊與連線</div>
+                    <input id="userNameInput" placeholder="請輸入名稱 (例: 爸爸)..." style="padding: 1.2vh 0.8vh; font-size: 1.3vh;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.4vw;">
+                        <button id="regBtn" onclick="registerAndConnect()" style="padding: 0.7vh 0.2vw;">註冊連線</button>
+                        <button id="reconnectBtn" class="secondary" onclick="manualReconnect()" style="padding: 0.7vh 0.2vw;" disabled>重連</button>
+                        <button id="unregBtn" class="secondary" onclick="unregisterAndDisconnect()" style="padding: 0.7vh 0.2vw;" disabled>取消</button>
+                    </div>
+                    <!-- 目標電視房號輸入 -->
+                    <div class="field" style="margin-top: 0.5vh;">
+                        <label>目標電視房號 (Dashboard ID)</label>
+                        <input id="targetTvInput" placeholder="請輸入目標電視 ID (例: demo_tv)..." style="padding: 0.8vh; font-size: 1.2vh;">
+                    </div>
+                    <!-- 時區偏移 -->
+                    <div style="border-top: 1px dashed #1e3a60; padding-top: 0.4vh; margin-top: 0.2vh; display: flex; flex-direction: column; gap: 0.3vh;">
+                        <div style="font-size: 1.1vh; color: #94a3b8; display: flex; justify-content: space-between; align-items: center;">
+                            <span>⏰ 時區偏移：</span>
+                            <strong id="offsetHint" style="color: #f8fafc; font-size: 1.1vh;">無偏移</strong>
+                        </div>
+                        <div style="display: flex; gap: 0.6vw; align-items: center;">
+                            <input id="timezoneOffsetInput" type="number" value="0" style="flex: 1; text-align: center; padding: 0.6vh;" onchange="updateOffset()">
+                            <button class="secondary" onclick="resetOffset()" style="padding: 0.6vh 1vw;">歸零</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 欄位二：系統連線與直式燈號 -->
+                <div class="column-group" style="justify-content: flex-start; gap: 0.8vh;">
+                    <div style="font-size: 1.2vh; font-weight: bold; color: #38bdf8;">📊 系統與訂閱狀態</div>
+                    <div class="status-col-group">
+                        <div class="status-row" id="statusWsRow"><span id="iconWs">🔴</span><span>伺服器連線狀態</span></div>
+                        <div class="status-row" id="statusGoogleRow"><span id="iconGoogle">🔴</span><span>Google 曆同步</span></div>
+                        <div class="status-row" id="statusIosRow"><span id="iconIos">🔴</span><span>iOS 曆同步</span></div>
+                    </div>
+                </div>
+
+                <!-- 欄位三：iCal 訂閱同步專區 -->
+                <div class="column-group">
+                    <div style="font-size: 1.2vh; font-weight: bold; color: #93c5fd;">⚙️ 行事曆訂閱同步 (iCal)</div>
+                    
+                    <!-- Google ICS 區塊 -->
+                    <div style="display: flex; gap: 0.5vw; align-items: center;">
+                        <input id="googleIcsInput" placeholder="請貼上完整的 Google ics 訂閱網址..." style="flex:1; padding: 1vh 0.8vh;" disabled>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5vw;" id="googleBtnGroup1">
+                        <button id="registerGoogleIcsBtn" onclick="registerGoogleIcs()" style="padding: 0.7vh; font-size: 1.1vh; text-align: center;" disabled>註冊 Google ICS</button>
+                        <button id="updateGoogleIcsBtn" class="secondary" onclick="enableGoogleEdit()" style="padding: 0.7vh; font-size: 1.1vh; text-align: center;" disabled>更新 Google ICS</button>
+                    </div>
+                    <div style="display: none; grid-template-columns: 1fr 1fr; gap: 0.5vw;" id="googleBtnGroup2">
+                        <button onclick="confirmGoogleUpdate()" style="padding: 0.7vh; font-size: 1.1vh; text-align: center; background: #166534;">確認送出</button>
+                        <button class="danger" onclick="cancelGoogleEdit()" style="padding: 0.7vh; font-size: 1.1vh; text-align: center;">取消</button>
+                    </div>
+
+                    <!-- iOS ICS 區塊 -->
+                    <div style="display: flex; gap: 0.5vw; align-items: center; margin-top: 0.8vh;">
+                        <input id="iosIcsInput" placeholder="請貼上完整的 iCloud ics 訂閱網址..." style="flex:1; padding: 1vh 0.8vh;" disabled>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5vw;" id="iosBtnGroup1">
+                        <button id="registerIosIcsBtn" onclick="registerIosIcs()" style="padding: 0.7vh; font-size: 1.1vh; text-align: center;" disabled>註冊 iCloud ICS</button>
+                        <button id="updateIosIcsBtn" class="secondary" onclick="enableIosEdit()" style="padding: 0.7vh; font-size: 1.1vh; text-align: center;" disabled>更新 iCloud ICS</button>
+                    </div>
+                    <div style="display: none; grid-template-columns: 1fr 1fr; gap: 0.5vw;" id="iosBtnGroup2">
+                        <button onclick="confirmIosUpdate()" style="padding: 0.7vh; font-size: 1.1vh; text-align: center; background: #166534;">確認送出</button>
+                        <button class="danger" onclick="cancelIosEdit()" style="padding: 0.7vh; font-size: 1.1vh; text-align: center;">取消</button>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+
+        <footer style="background:#091523; border-top:1px solid #263e57; display:flex; align-items:center; padding:0 2vw; color:#64748b; font-size:1.1vh;">
+            <div id="log">系統就緒，請輸入名稱並點擊註冊</div>
+        </footer>
+    </div>
+
+    <script>
+        let deviceId = ""; 
+        let customName = "";
+        let currentStatus = "disconnected";
+        let currentRoomId = localStorage.getItem('tv_room_id') || "demo_tv";
+        let ws = null;
+        let hourOffset = 0;
+        let phonePingTimer = null;
+
+        function startPhonePing() {
+            if (phonePingTimer) clearInterval(phonePingTimer);
+            phonePingTimer = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: "ping" }));
+                }
+            }, 15000); // 每 15 秒發送一次心跳
+        }
+
+        function maskString(str) {
+            if (!str || str.length < 30) return str;
+            return str.substring(0, 20) + "..." + str.substring(str.length - 10);
+        }
+
+        function updateOffset() {
+            const input = document.getElementById("timezoneOffsetInput");
+            if (input) {
+                hourOffset = parseFloat(input.value) || 0;
+                const hint = document.getElementById("offsetHint");
+                hint.textContent = hourOffset === 0 ? "無偏移" : `偏移 ${hourOffset > 0 ? '+' + hourOffset : hourOffset}h`;
+            }
+        }
+
+        function resetOffset() {
+            const input = document.getElementById("timezoneOffsetInput");
+            if (input) { input.value = "0"; updateOffset(); }
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const hourSelect = document.getElementById("calHour");
+            if (hourSelect && hourSelect.children.length === 0) {
+                for (let h = 0; h < 24; h++) {
+                    let hStr = String(h).padStart(2, '0');
+                    let opt = document.createElement("option");
+                    opt.value = hStr;
+                    opt.textContent = hStr;
+                    hourSelect.appendChild(opt);
+                }
+            }
+
+            const minSelect = document.getElementById("calMinute");
+            if (minSelect && minSelect.children.length === 0) {
+                for (let m = 0; m < 60; m++) {
+                    let mStr = String(m).padStart(2, '0');
+                    let opt = document.createElement("option");
+                    opt.value = mStr;
+                    opt.textContent = mStr;
+                    minSelect.appendChild(opt);
+                }
+            }
+
+            const now = new Date();
+            const calDateInput = document.getElementById("calDate");
+            const calHourSelect = document.getElementById("calHour");
+            const calMinuteSelect = document.getElementById("calMinute");
+
+            if (calDateInput && !calDateInput.value) {
+                calDateInput.value = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+            }
+            if (calHourSelect) calHourSelect.value = String(now.getHours()).padStart(2, '0');
+            if (calMinuteSelect) calMinuteSelect.value = String(now.getMinutes()).padStart(2, '0');
+            
+            deviceId = localStorage.getItem('phone_device_id') || ""; 
+            customName = localStorage.getItem('phone_custom_name') || "";
+            let savedToken = localStorage.getItem('tv_device_token') || null;
+            
+            if (!deviceId || !customName || !savedToken) {
+                localStorage.removeItem('tv_room_id');
+                currentRoomId = "demo_tv";
+            } else {
+                currentRoomId = localStorage.getItem('tv_room_id') || "demo_tv";
+            }
+
+            const nameInput = document.getElementById("userNameInput");
+            const regBtn = document.getElementById("regBtn");
+            const reconnectBtn = document.getElementById("reconnectBtn");
+            const unregBtn = document.getElementById("unregBtn");
+            const titleEl = document.getElementById("deviceTitle");
+
+            if (deviceId && customName && savedToken) {
+                if (nameInput) { nameInput.value = customName; nameInput.disabled = true; }
+                const targetTvInput = document.getElementById("targetTvInput");
+                if (targetTvInput) {
+                    targetTvInput.value = currentRoomId;
+                    targetTvInput.disabled = true;
+                }
+                if (regBtn) regBtn.disabled = true;
+                if (reconnectBtn) reconnectBtn.disabled = false;
+                if (unregBtn) unregBtn.disabled = false;
+                if (titleEl) titleEl.textContent = `📱 模擬手機APP: ${customName} (${deviceId})`;
+                document.title = `${customName} Console`;
+                updateTvRoomInfo(currentRoomId);
+            } else {
+                resetToUnregisteredState();
+            }
+
+            initWebSocket();
+        });
+
+        // 💡 依照規劃：未註冊時 ICS 區塊鎖定；註冊連線後依狀態解鎖
+        function setIcsUiState(isRegistered, googleUrl = "", iosUrl = "") {
+            const googleInput = document.getElementById("googleIcsInput");
+            const regGoogleBtn = document.getElementById("registerGoogleIcsBtn");
+            const upGoogleBtn = document.getElementById("updateGoogleIcsBtn");
+
+            const iosInput = document.getElementById("iosIcsInput");
+            const regIosBtn = document.getElementById("registerIosIcsBtn");
+            const upIosBtn = document.getElementById("updateIosIcsBtn");
+
+            if (!isRegistered) {
+                // 規則 4：未註冊綁定 TV，全部不允許變更
+                googleInput.value = "";
+                googleInput.dataset.rawUrl = "";
+                googleInput.disabled = true;
+                regGoogleBtn.disabled = true;
+                upGoogleBtn.disabled = true;
+                updateSubStatus('google', false);
+
+                iosInput.value = "";
+                iosInput.dataset.rawUrl = "";
+                iosInput.disabled = true;
+                regIosBtn.disabled = true;
+                upIosBtn.disabled = true;
+                updateSubStatus('ios', false);
+                return;
+            }
+
+            // Google ICS 狀態判斷
+            if (googleUrl) {
+                // 規則 2：已綁定，反灰網址列與註冊按鈕，亮起更新按鈕
+                googleInput.dataset.rawUrl = googleUrl;
+                googleInput.value = maskString(googleUrl);
+                googleInput.disabled = true;
+                regGoogleBtn.disabled = true;
+                upGoogleBtn.disabled = false;
+                updateSubStatus('google', true);
+            } else {
+                // 規則 1：沒有訂閱，網址列允許輸入，註冊按鈕亮起
+                googleInput.value = "";
+                googleInput.dataset.rawUrl = "";
+                googleInput.disabled = false;
+                googleInput.placeholder = "請貼上完整的 Google ics 訂閱網址...";
+                regGoogleBtn.disabled = false;
+                upGoogleBtn.disabled = true;
+                updateSubStatus('google', false);
+            }
+
+            // iOS ICS 狀態判斷
+            if (iosUrl) {
+                iosInput.dataset.rawUrl = iosUrl;
+                iosInput.value = maskString(iosUrl);
+                iosInput.disabled = true;
+                regIosBtn.disabled = true;
+                upIosBtn.disabled = false;
+                updateSubStatus('ios', true);
+            } else {
+                iosInput.value = "";
+                iosInput.dataset.rawUrl = "";
+                iosInput.disabled = false;
+                iosInput.placeholder = "請貼上完整的 iCloud webcal 訂閱網址...";
+                regIosBtn.disabled = false;
+                upIosBtn.disabled = true;
+                updateSubStatus('ios', false);
+            }
+        }
+
+        function resetToUnregisteredState() {
+            deviceId = "";
+            customName = "";
+            currentRoomId = "demo_tv";
+
+            updateStatus("disconnected");
+            updateSubStatus('ws', false);
+            setIcsUiState(false); // 💡 未註冊時 ICS 全面鎖定
+
+            localStorage.removeItem('phone_device_id');
+            localStorage.removeItem('phone_custom_name');
+            localStorage.removeItem('tv_device_token');
+            localStorage.removeItem('tv_room_id');
+            localStorage.removeItem('phone_google_ics_url');
+            localStorage.removeItem('phone_ios_ics_url');
+            
+            const nameInput = document.getElementById("userNameInput");
+            const targetTvInput = document.getElementById("targetTvInput");
+            const regBtn = document.getElementById("regBtn");
+            const reconnectBtn = document.getElementById("reconnectBtn");
+            const unregBtn = document.getElementById("unregBtn");
+            const titleEl = document.getElementById("deviceTitle");
+
+            if (nameInput) { nameInput.value = ""; nameInput.disabled = false; }
+            if (targetTvInput) { targetTvInput.value = ""; targetTvInput.disabled = false; }
+            if (regBtn) regBtn.disabled = false;
+            if (reconnectBtn) reconnectBtn.disabled = true;
+            if (unregBtn) unregBtn.disabled = true;
+            if (titleEl) titleEl.textContent = "📱 模擬手機 (未註冊)";
+            
+            const logEl = document.getElementById("log");
+            if (logEl) logEl.textContent = "系統就緒，請輸入名稱並點擊註冊";
+            document.title = "Simulated Phone Console";
+            updateTvRoomInfo("未連線");
+        }
+
+        function updateStatus(status) {
+            currentStatus = status;
+            const topText = document.getElementById("topConnText");
+            if (topText) {
+                topText.textContent = status;
+                topText.className = "conn-badge " + status;
+            }
+        }
+
+        function updateSubStatus(target, isConnected) {
+            if (target === 'ws') {
+                const icon = document.getElementById("iconWs");
+                const row = document.getElementById("statusWsRow");
+                if (isConnected) { icon.textContent = "🟢"; row.classList.add("active"); }
+                else { icon.textContent = "🔴"; row.classList.remove("active"); }
+            } else if (target === 'google') {
+                const icon = document.getElementById("iconGoogle");
+                const row = document.getElementById("statusGoogleRow");
+                if (isConnected) { icon.textContent = "🟢"; row.classList.add("active"); }
+                else { icon.textContent = "🔴"; row.classList.remove("active"); }
+            } else if (target === 'ios') {
+                const icon = document.getElementById("iconIos");
+                const row = document.getElementById("statusIosRow");
+                if (isConnected) { icon.textContent = "🟢"; row.classList.add("active"); }
+                else { icon.textContent = "🔴"; row.classList.remove("active"); }
+            }
+        }
+
+        function updateTvRoomInfo(roomId = "demo_tv") {
+            const tvRoomDisplay = document.getElementById("tvRoomDisplay");
+            if (tvRoomDisplay) tvRoomDisplay.textContent = `目標 TV 房間：${roomId}`;
+        }
+
+        function initWebSocket() {
+            if (ws) {
+                try { ws.close(); } catch (e) {}
+                ws = null;
+            }
+
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            let currentHost = window.location.host || "taotaohome.tplinkdns.com:3000";
+
+            try {
+                ws = new WebSocket(wsProtocol + currentHost);
+            } catch (e) {
+                updateStatus("disconnected");
+                return;
+            }
+
+            ws.onopen = () => {
+                updateSubStatus('ws', true);
+                startPhonePing();
+                const targetTvInput = document.getElementById("targetTvInput");
+                const inputTvId = targetTvInput ? targetTvInput.value.trim() : "";
+                const targetRoom = inputTvId || localStorage.getItem('tv_room_id') || "demo_tv";
+                const savedName = localStorage.getItem('phone_custom_name') || customName;
+                const savedToken = localStorage.getItem('tv_device_token');
+                const savedDeviceId = localStorage.getItem('phone_device_id');
+
+                if (savedName && targetRoom) {
+                    ws.send(JSON.stringify({
+                        type: "register_phone",
+                        name: savedName,
+                        targetDashboard: targetRoom,
+                        token: savedToken,
+                        preferredId: savedDeviceId
+                    }));
+                }
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === "pong") {
+                        return;
+                    }
+                    if (data.type === "error") { alert("操作錯誤: " + data.message); return; }
+                    
+                    if (data.type === "force_reconnect" || data.type === "unregistered") {
+                        resetToUnregisteredState();
+                        return;
+                    }
+
+                    if (data.type === "registered_success") {
+                        deviceId = data.deviceId;
+                        currentRoomId = data.roomId || "demo_tv";
+                        localStorage.setItem('tv_room_id', currentRoomId);
+                        updateTvRoomInfo(currentRoomId);
+                        if (data.token) localStorage.setItem('tv_device_token', data.token);
+
+                        // 💡 規則 1 & 2：從伺服器取得電視當前的 ics 狀態來初始化 UI
+                        const gUrl = data.googleIcsUrl || "";
+                        const iUrl = data.iosIcsUrl || "";
+                        if (gUrl) localStorage.setItem('phone_google_ics_url', gUrl);
+                        else localStorage.removeItem('phone_google_ics_url');
+                        
+                        if (iUrl) localStorage.setItem('phone_ios_ics_url', iUrl);
+                        else localStorage.removeItem('phone_ios_ics_url');
+
+                        setIcsUiState(true, gUrl, iUrl);
+
+                        const nameInput = document.getElementById("userNameInput");
+                        if (nameInput) customName = nameInput.value.trim();
+                        localStorage.setItem('phone_device_id', deviceId);
+                        localStorage.setItem('phone_custom_name', customName);
+                        
+                        const targetTvInput = document.getElementById("targetTvInput");
+                        if (targetTvInput) {
+                            targetTvInput.value = currentRoomId;
+                            targetTvInput.disabled = true;
+                        }
+
+                        document.getElementById("log").textContent = `已成功連線至房間：${currentRoomId} (裝置代號: ${deviceId})`;
+                        document.getElementById("deviceTitle").textContent = `📱 模擬手機: ${customName} (${deviceId})`;
+                        if (nameInput) nameInput.disabled = true;
+                        document.getElementById("regBtn").disabled = true;
+                        document.getElementById("reconnectBtn").disabled = false;
+                        document.getElementById("unregBtn").disabled = false;
+
+                        ws.send(JSON.stringify({ type: "phone_name_sync", deviceId: deviceId, name: customName }));
+                        updateStatus("connected");
+                        updateSubStatus('ws', true);
+                    }
+                    if (data.type === "register_error") { alert("註冊失敗: " + data.message); resetToUnregisteredState(); return; }
+                } catch (err) {}
+            };
+
+            ws.onclose = () => {
+                if (phonePingTimer) {
+                    clearInterval(phonePingTimer);
+                    phonePingTimer = null;
+                }
+                updateSubStatus('ws', false); 
+                updateStatus("disconnected"); 
+                updateTvRoomInfo("未連線");
+                setIcsUiState(false);
+                if (!deviceId) resetToUnregisteredState();
+            };
+
+            ws.onerror = () => { if (!deviceId) resetToUnregisteredState(); };
+        }
+
+        let isRegistering = false;
+        function registerAndConnect() {
+            if (isRegistering) return;
+            isRegistering = true;
+
+            const nameInput = document.getElementById("userNameInput");
+            const targetTvInput = document.getElementById("targetTvInput");
+            customName = nameInput ? nameInput.value.trim() : "";
+            const targetTvId = targetTvInput ? targetTvInput.value.trim() : "demo_tv";
+
+            if (!customName) { alert("請輸入名稱！"); isRegistering = false; return; }
+            if (!targetTvId) { alert("請輸入要連線的目標電視房號！"); isRegistering = false; return; }
+
+            localStorage.removeItem('tv_device_token');
+            localStorage.removeItem('phone_device_id');
+            deviceId = "";
+
+            const sendPacket = () => {
+                if (!ws || ws.readyState !== WebSocket.OPEN) { isRegistering = false; return; }
+                ws.send(JSON.stringify({ 
+                    type: "register_phone", 
+                    name: customName, 
+                    targetDashboard: targetTvId, 
+                    preferredId: null 
+                }));
+
+                if (nameInput) nameInput.disabled = true;
+                if (targetTvInput) targetTvInput.disabled = true;
+                document.getElementById("regBtn").disabled = true;
+
+                setTimeout(() => {
+                    if (!deviceId && isRegistering) {
+                        alert("伺服器回應逾時，請重試。");
+                        isRegistering = false;
+                        resetToUnregisteredState();
+                    }
+                }, 3000);
+            };
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                if (ws) { try { ws.close(); } catch(e){} }
+                const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+                let currentHost = window.location.host || "taotaohome.tplinkdns.com:3000";
+
+                try {
+                    ws = new WebSocket(wsProtocol + currentHost);
+                } catch (e) {
+                    alert("連線失敗");
+                    isRegistering = false;
+                    resetToUnregisteredState();
+                    return;
+                }
+
+                ws.onopen = () => { updateSubStatus('ws', true); sendPacket(); };
+                ws.onclose = () => { updateSubStatus('ws', false); updateStatus("disconnected"); isRegistering = false; };
+                return;
+            }
+            sendPacket();
+        }
+
+        function unregisterAndDisconnect() {
+            updateStatus("disconnected");
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "unregister_phone", deviceId: deviceId }));
+            }
+            resetToUnregisteredState();
+        }
+
+        function getActiveTargetRoom() {
+            const targetTvInput = document.getElementById("targetTvInput");
+            const inputVal = targetTvInput ? targetTvInput.value.trim() : "";
+            return inputVal || currentRoomId || "demo_tv";
+        }
+
+        function sendMessage() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) { alert("未連線！"); return; }
+            const msgEl = document.getElementById("message");
+            const textVal = msgEl ? msgEl.value.trim() : "";
+            if (!textVal) { alert("請輸入內容！"); return; }
+            
+            const activeRoom = getActiveTargetRoom();
+            ws.send(JSON.stringify({
+                type: "message", targetDashboard: activeRoom,
+                id: "msg-" + Date.now(), deviceId: deviceId, senderName: customName, text: textVal, timestamp: new Date().toISOString()
+            }));
+            msgEl.value = "";
+        }
+
+        function sendCalendar() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) { alert("未連線！"); return; }
+            const titleVal = document.getElementById("calendarTitle").value.trim();
+            const dateVal = document.getElementById("calDate").value;
+            const hourVal = document.getElementById("calHour").value;
+            const minVal = document.getElementById("calMinute").value;
+
+            if (!titleVal || !dateVal) { alert("請填寫完整行程標題與日期！"); return; }
+            
+            const startDate = new Date(`${dateVal}T${hourVal}:${minVal}:00`);
+            if (isNaN(startDate.getTime())) { alert("時間格式錯誤！"); return; }
+
+            const activeRoom = getActiveTargetRoom();
+            ws.send(JSON.stringify({
+                type: "calendar", targetDashboard: activeRoom,
+                id: "manual-" + Date.now(), deviceId: deviceId, senderName: customName,
+                title: titleVal, start: startDate.toISOString(), end: new Date(startDate.getTime() + 3600000).toISOString(), timestamp: new Date().toISOString()
+            }));
+            document.getElementById("calendarTitle").value = "";
+        }
+
+        function sendTodo() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) { alert("未連線！"); return; }
+            const todoEl = document.getElementById("todoText");
+            const textVal = todoEl.value.trim();
+            if (!textVal) { alert("請輸入提醒！"); return; }
+
+            const activeRoom = getActiveTargetRoom();
+            ws.send(JSON.stringify({
+                type: "todo", targetDashboard: activeRoom,
+                id: "todo-" + Date.now(), deviceId: deviceId, senderName: customName, text: textVal, completed: false, timestamp: new Date().toISOString()
+            }));
+            todoEl.value = "";
+        }
+
+        function manualReconnect() { initWebSocket(); }
+
+        // 💡 Google ICS 註冊
+        function registerGoogleIcs() {
+            const input = document.getElementById('googleIcsInput');
+            let url = (input.value || "").trim();
+            if (!url || url.includes('...')) { alert("請輸入有效的完整 Google ics 訂閱網址！"); return; }
+
+            localStorage.setItem('phone_google_ics_url', url);
+            input.dataset.rawUrl = url; 
+            input.value = maskString(url);
+            input.disabled = true;
+
+            document.getElementById("registerGoogleIcsBtn").disabled = true;
+            document.getElementById("updateGoogleIcsBtn").disabled = false;
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "update_ics_url", icsUrl: url, calendarType: "google" }));
+                updateSubStatus('google', true);
+                alert("Google ics 註冊成功！伺服器已同步接管並快取。");
+            }
+        }
+
+        function enableGoogleEdit() {
+            const input = document.getElementById('googleIcsInput');
+            input.disabled = false;
+            input.value = ""; 
+            input.placeholder = "請輸入新的 Google ics 訂閱網址...";
+            input.focus();
+
+            document.getElementById("googleBtnGroup1").style.display = "none";
+            document.getElementById("googleBtnGroup2").style.display = "grid";
+        }
+
+        // 💡 規則 3：確認更新或清除訂閱（傳送空值即為取消訂閱，恢復初始狀態）
+        function confirmGoogleUpdate() {
+            const input = document.getElementById('googleIcsInput');
+            let url = input.value.trim();
+            
+            if (!url) {
+                if (confirm("您輸入的網址為空白，請問是否要清除並移除此 Google iCal 訂閱？")) {
+                    localStorage.removeItem('phone_google_ics_url');
+                    input.dataset.rawUrl = "";
+                    input.value = "";
+                    input.disabled = false; // 恢復為允許輸入
+                    input.placeholder = "請貼上完整的 Google ics 訂閱網址...";
+
+                    document.getElementById("googleBtnGroup2").style.display = "none";
+                    document.getElementById("googleBtnGroup1").style.display = "grid";
+                    document.getElementById("registerGoogleIcsBtn").disabled = false;
+                    document.getElementById("updateGoogleIcsBtn").disabled = true;
+
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "update_ics_url", icsUrl: "", calendarType: "google" }));
+                        updateSubStatus('google', false);
+                        alert("Google iCal 訂閱已清除，已恢復初始狀態！");
+                    }
+                }
+                return;
+            }
+
+            if (url.includes('...') || (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('webcal://'))) {
+                alert("格式錯誤！請輸入以 http://、https:// 或 webcal:// 開頭的有效 ics 訂閱網址。");
+                return;
+            }
+
+            localStorage.setItem('phone_google_ics_url', url);
+            input.dataset.rawUrl = url;
+            input.value = maskString(url);
+            input.disabled = true;
+
+            document.getElementById("googleBtnGroup2").style.display = "none";
+            document.getElementById("googleBtnGroup1").style.display = "grid";
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "update_ics_url", icsUrl: url, calendarType: "google" }));
+                updateSubStatus('google', true);
+                alert("Google ics 已成功更新！");
+            }
+        }
+
+        function cancelGoogleEdit() {
+            const input = document.getElementById('googleIcsInput');
+            if (input.dataset.rawUrl) {
+                input.value = maskString(input.dataset.rawUrl);
+                input.disabled = true;
+            } else {
+                input.value = "";
+                input.disabled = false;
+            }
+            input.placeholder = "請貼上完整的 Google ics 訂閱網址...";
+
+            document.getElementById("googleBtnGroup2").style.display = "none";
+            document.getElementById("googleBtnGroup1").style.display = "grid";
+        }
+
+        // 💡 iOS ICS 註冊
+        function registerIosIcs() {
+            const input = document.getElementById('iosIcsInput');
+            let url = (input.value || "").trim();
+            if (!url || url.includes('...')) { alert("請輸入有效的完整 iOS ics 訂閱網址！"); return; }
+            if (url.startsWith("webcal://")) url = url.replace("webcal://", "https://");
+
+            localStorage.setItem('phone_ios_ics_url', url);
+            input.dataset.rawUrl = url; 
+            input.value = maskString(url);
+            input.disabled = true;
+
+            document.getElementById("registerIosIcsBtn").disabled = true;
+            document.getElementById("updateIosIcsBtn").disabled = false;
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "update_ics_url", icsUrl: url, calendarType: "ios" }));
+                updateSubStatus('ios', true);
+                alert("iOS ics 註冊成功！");
+            }
+        }
+
+        function enableIosEdit() {
+            const input = document.getElementById('iosIcsInput');
+            input.disabled = false;
+            input.value = ""; 
+            input.placeholder = "請輸入新的 iOS ics 訂閱網址...";
+            input.focus();
+
+            document.getElementById("iosBtnGroup1").style.display = "none";
+            document.getElementById("iosBtnGroup2").style.display = "grid";
+        }
+
+        // 💡 規則 3：確認更新或清除 iOS 訂閱（傳送空值即為取消訂閱，恢復初始狀態）
+        function confirmIosUpdate() {
+            const input = document.getElementById('iosIcsInput');
+            let url = input.value.trim();
+            
+            if (!url) {
+                if (confirm("您輸入的網址為空白，請問是否要清除並移除此 iCloud webcal 訂閱？")) {
+                    localStorage.removeItem('phone_ios_ics_url');
+                    input.dataset.rawUrl = "";
+                    input.value = "";
+                    input.disabled = false; // 恢復為允許輸入
+                    input.placeholder = "請貼上完整的 iCloud webcal 訂閱網址...";
+
+                    document.getElementById("iosBtnGroup2").style.display = "none";
+                    document.getElementById("iosBtnGroup1").style.display = "grid";
+                    document.getElementById("registerIosIcsBtn").disabled = false;
+                    document.getElementById("updateIosIcsBtn").disabled = true;
+
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "update_ics_url", icsUrl: "", calendarType: "ios" }));
+                        updateSubStatus('ios', false);
+                        alert("iCloud webcal 訂閱已清除，已恢復初始狀態！");
+                    }
+                }
+                return;
+            }
+
+            if (url.includes('...') || (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('webcal://'))) {
+                alert("格式錯誤！請輸入以 http://、https:// 或 webcal:// 開頭的有效 ics 訂閱網址。");
+                return;
+            }
+
+            if (url.startsWith("webcal://")) url = url.replace("webcal://", "https://");
+
+            localStorage.setItem('phone_ios_ics_url', url);
+            input.dataset.rawUrl = url;
+            input.value = maskString(url);
+            input.disabled = true;
+
+            document.getElementById("iosBtnGroup2").style.display = "none";
+            document.getElementById("iosBtnGroup1").style.display = "grid";
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "update_ics_url", icsUrl: url, calendarType: "ios" }));
+                updateSubStatus('ios', true);
+                alert("iOS ics 已成功更新！");
+            }
+        }
+
+        function cancelIosEdit() {
+            const input = document.getElementById('iosIcsInput');
+            if (input.dataset.rawUrl) {
+                input.value = maskString(input.dataset.rawUrl);
+                input.disabled = true;
+            } else {
+                input.value = "";
+                input.disabled = false;
+            }
+            input.placeholder = "請貼上完整的 iOS ics 訂閱網址...";
+
+            document.getElementById("iosBtnGroup2").style.display = "none";
+            document.getElementById("iosBtnGroup1").style.display = "grid";
+        }
+    </script>
+</body>
+</html>

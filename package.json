@@ -1,0 +1,21 @@
+{
+  "name": "v24.21.0-win-x64",
+  "version": "1.0.0",
+  "description": "Node.js is an open-source, cross-platform JavaScript runtime environment.",
+  "main": "server.js",
+  "dependencies": {
+    "corepack": "^0.36.0",
+    "node-ical": "^0.27.3",
+    "npm": "^11.19.0",
+    "pkg": "^5.8.1",
+    "ws": "^8.22.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
