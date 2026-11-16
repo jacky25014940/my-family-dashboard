@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
+const { fetchUberTrackingData } = require('./uberTracker');
 
 const SECRET_KEY = "my_innovation_secret_2026"; 
 const ADMIN_SECRET_KEY = "admin_secure_key_2026"; 
