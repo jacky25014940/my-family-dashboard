@@ -8,7 +8,6 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     procps \
     libxss1 \
-    libgconf-2-4 \
     libxtst6 \
     libnss3 \
     libatk1.0-0 \
@@ -25,10 +24,12 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     libglib2.0-0 \
-    fonts-ipafont-gothic fonts-wqicjk fonts-freefont-ttf \
+    fonts-ipafont-gothic \
+    fonts-wqy-zenhei \
+    fonts-freefont-ttf \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
-
+    
 # 建立工作目錄
 WORKDIR /usr/src/app
 
