@@ -146,7 +146,12 @@ setInterval(() => {
 }, 10000); // 每 10 秒檢查一次
 
 const icsCache = new Map();
-const ICS_CACHE_TTL = 30 * 60 * 1000; 
+const ICS_CACHE_TTL = 30 * 60 * 1000;
+
+// Uber 外送追蹤狀態管理
+let currentTrackingUrl = null;
+let latestDeliveryData = { status: '尚未開始追蹤', eta: '--', updateTime: '' };
+let deliveryIntervalTimer = null;
 
 function sendWs(socket, dataObj) {
     if (!socket || socket.destroyed) return;
@@ -794,6 +799,68 @@ server.on('upgrade', (req, socket, head) => {
                     }
                 }
                 sendWs(socket, { type: 'admin_action_success', message: 'ICS 快取已清除, 且已自動推播最新行程至在線電視' });
+                return;
+            }
+
+            // 13. 啟動 Uber 外送追蹤
+            if (data.type === 'start_uber_tracking') {
+                const trackingUrl = data.trackingUrl;
+                const targetDash = data.targetDashboard || currentDashboardId || 'demo_tv';
+
+                if (!trackingUrl) {
+                    sendWs(socket, { type: 'error', message: '追蹤失敗：未提供 Tracking URL' });
+                    return;
+                }
+
+                currentTrackingUrl = trackingUrl;
+                console.log(`[Uber 追蹤] 開始監控網址: ${trackingUrl}`);
+                broadcastAdminLog(`[Uber 追蹤] 開始監控訂單進度`, targetDash);
+
+                // 立即執行一次抓取
+                const executeFetch = async () => {
+                    const result = await fetchUberTrackingData(currentTrackingUrl);
+                    if (result.success) {
+                        latestDeliveryData = { ...result.data, success: true };
+                        console.log(`[Uber 追蹤更新] ETA: ${latestDeliveryData.eta}, 狀態: ${latestDeliveryData.status}`);
+                        
+                        // 主動推播給該房間的所有電視端連線
+                        const tvSockets = dashboardRooms.get(targetDash);
+                        if (tvSockets) {
+                            for (let s of tvSockets) {
+                                if (!s.destroyed) {
+                                    sendWs(s, {
+                                        type: 'uber_delivery_status_update',
+                                        data: latestDeliveryData
+                                    });
+                                }
+                            }
+                        }
+                    } else {
+                        console.error(`[Uber 追蹤錯誤] ${result.error}`);
+                        broadcastAdminLog(`[Uber 追蹤錯誤] ${result.error}`, targetDash);
+                    }
+                };
+
+                // 執行第一次
+                executeFetch();
+
+                // 清除舊的計時器（如果有的話），設定每 45 秒自動輪詢一次
+                if (deliveryIntervalTimer) clearInterval(deliveryIntervalTimer);
+                deliveryIntervalTimer = setInterval(executeFetch, 45000);
+
+                return;
+            }
+
+            // 14. 停止 Uber 外送追蹤
+            if (data.type === 'stop_uber_tracking') {
+                if (deliveryIntervalTimer) {
+                    clearInterval(deliveryIntervalTimer);
+                    deliveryIntervalTimer = null;
+                }
+                currentTrackingUrl = null;
+                latestDeliveryData = { status: '已停止追蹤', eta: '--', updateTime: '' };
+                console.log(`[Uber 追蹤] 已停止監控`);
+                broadcastAdminLog(`[Uber 追蹤] 已停止監控`, currentDashboardId);
                 return;
             }
 
