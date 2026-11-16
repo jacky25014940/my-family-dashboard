@@ -33,14 +33,14 @@ RUN apt-get update && apt-get install -y \
 # 建立工作目錄
 WORKDIR /usr/src/app
 
-# 複製 package.json 與相依性檔案
+# 1. 先複製 package.json 與 package-lock.json
 COPY package*.json ./
 
-# 安裝專案 npm 套件（建議指定跳過 puppeteer 內建自動下載 Chromium，改用系統安裝的 Chromium）
+# 2. 安裝專案 npm 套件（包含我們剛剛在 package.json 補上的 puppeteer）
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 RUN npm install
 
-# 複製其餘程式碼至容器內
+# 3. 複製其餘所有程式碼（包含 server.js 與 uberTracker.js）至容器內
 COPY . .
 
 # 開放 Render 預設或指定的 Port
