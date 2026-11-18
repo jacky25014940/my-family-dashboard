@@ -302,7 +302,6 @@
             initWebSocket();
         });
 
-        // 💡 依照規劃：未註冊時 ICS 區塊鎖定；註冊連線後依狀態解鎖
         function setIcsUiState(isRegistered, googleUrl = "", iosUrl = "") {
             const googleInput = document.getElementById("googleIcsInput");
             const regGoogleBtn = document.getElementById("registerGoogleIcsBtn");
@@ -313,7 +312,6 @@
             const upIosBtn = document.getElementById("updateIosIcsBtn");
 
             if (!isRegistered) {
-                // 規則 4：未註冊綁定 TV，全部不允許變更
                 googleInput.value = "";
                 googleInput.dataset.rawUrl = "";
                 googleInput.disabled = true;
@@ -330,9 +328,7 @@
                 return;
             }
 
-            // Google ICS 狀態判斷
             if (googleUrl) {
-                // 規則 2：已綁定，反灰網址列與註冊按鈕，亮起更新按鈕
                 googleInput.dataset.rawUrl = googleUrl;
                 googleInput.value = maskString(googleUrl);
                 googleInput.disabled = true;
@@ -340,7 +336,6 @@
                 upGoogleBtn.disabled = false;
                 updateSubStatus('google', true);
             } else {
-                // 規則 1：沒有訂閱，網址列允許輸入，註冊按鈕亮起
                 googleInput.value = "";
                 googleInput.dataset.rawUrl = "";
                 googleInput.disabled = false;
@@ -350,7 +345,6 @@
                 updateSubStatus('google', false);
             }
 
-            // iOS ICS 狀態判斷
             if (iosUrl) {
                 iosInput.dataset.rawUrl = iosUrl;
                 iosInput.value = maskString(iosUrl);
@@ -376,7 +370,7 @@
 
             updateStatus("disconnected");
             updateSubStatus('ws', false);
-            setIcsUiState(false); // 💡 未註冊時 ICS 全面鎖定
+            setIcsUiState(false);
 
             localStorage.removeItem('phone_device_id');
             localStorage.removeItem('phone_custom_name');
@@ -495,7 +489,6 @@
                         updateTvRoomInfo(currentRoomId);
                         if (data.token) localStorage.setItem('tv_device_token', data.token);
 
-                        // 💡 規則 1 & 2：從伺服器取得電視當前的 ics 狀態來初始化 UI
                         const gUrl = data.googleIcsUrl || "";
                         const iUrl = data.iosIcsUrl || "";
                         if (gUrl) localStorage.setItem('phone_google_ics_url', gUrl);
@@ -528,10 +521,33 @@
                         updateStatus("connected");
                         updateSubStatus('ws', true);
                     }
-                    if (data.type === "register_error") { alert("註冊失敗: " + data.message); resetToUnregisteredState(); return; }
+
+                    // 💡 透過內存是否有 Token 憑證來精準分流處理註冊/重連失敗
+                    if (data.type === "register_error") {
+                        let savedToken = localStorage.getItem('tv_device_token');
+                        let hasLocalCredentials = !!(deviceId && savedToken);
+
+                        if (!hasLocalCredentials) {
+                            // 情況 A：本機沒有內存憑證 ➔ 代表是手動新註冊失敗（如房號打錯），安全清空
+                            alert("註冊失敗: " + data.message);
+                            resetToUnregisteredState();
+                        } else {
+                            // 情況 B：本機有內存憑證 ➔ 代表是背景自動重連失敗（伺服器可能重置過），保留憑證維持離線
+                            console.warn("自動重連失敗（伺服器可能已重置）: " + data.message);
+                            updateStatus("disconnected");
+                            updateSubStatus('ws', false);
+                            const logEl = document.getElementById("log");
+                            if (logEl) logEl.textContent = "自動重連失敗：伺服器狀態已重置，請點擊重連或重新註冊";
+                            
+                            const reconnectBtn = document.getElementById("reconnectBtn");
+                            if (reconnectBtn) reconnectBtn.disabled = false;
+                        }
+                        return;
+                    }
                 } catch (err) {}
             };
 
+            // 💡 斷線防護：有內存憑證時斷線絕不自動清空，保持離線並解鎖重連按鈕
             ws.onclose = () => {
                 if (phonePingTimer) {
                     clearInterval(phonePingTimer);
@@ -541,10 +557,27 @@
                 updateStatus("disconnected"); 
                 updateTvRoomInfo("未連線");
                 setIcsUiState(false);
-                if (!deviceId) resetToUnregisteredState();
+                
+                let savedToken = localStorage.getItem('tv_device_token');
+                let hasLocalCredentials = !!(deviceId && savedToken);
+
+                if (!hasLocalCredentials) {
+                    resetToUnregisteredState();
+                } else {
+                    const logEl = document.getElementById("log");
+                    if (logEl) logEl.textContent = "與伺服器斷線，請點擊「重連」按鈕或檢查網路";
+                    const reconnectBtn = document.getElementById("reconnectBtn");
+                    if (reconnectBtn) reconnectBtn.disabled = false;
+                }
             };
 
-            ws.onerror = () => { if (!deviceId) resetToUnregisteredState(); };
+            ws.onerror = () => { 
+                let savedToken = localStorage.getItem('tv_device_token');
+                let hasLocalCredentials = !!(deviceId && savedToken);
+                if (!hasLocalCredentials) {
+                    resetToUnregisteredState(); 
+                }
+            };
         }
 
         let isRegistering = false;
@@ -672,7 +705,7 @@
 
         function manualReconnect() { initWebSocket(); }
 
-        // 💡 Google ICS 註冊
+        // Google ICS 註冊
         function registerGoogleIcs() {
             const input = document.getElementById('googleIcsInput');
             let url = (input.value || "").trim();
@@ -704,7 +737,6 @@
             document.getElementById("googleBtnGroup2").style.display = "grid";
         }
 
-        // 💡 規則 3：確認更新或清除訂閱（傳送空值即為取消訂閱，恢復初始狀態）
         function confirmGoogleUpdate() {
             const input = document.getElementById('googleIcsInput');
             let url = input.value.trim();
@@ -714,7 +746,7 @@
                     localStorage.removeItem('phone_google_ics_url');
                     input.dataset.rawUrl = "";
                     input.value = "";
-                    input.disabled = false; // 恢復為允許輸入
+                    input.disabled = false;
                     input.placeholder = "請貼上完整的 Google ics 訂閱網址...";
 
                     document.getElementById("googleBtnGroup2").style.display = "none";
@@ -766,7 +798,7 @@
             document.getElementById("googleBtnGroup1").style.display = "grid";
         }
 
-        // 💡 iOS ICS 註冊
+        // iOS ICS 註冊
         function registerIosIcs() {
             const input = document.getElementById('iosIcsInput');
             let url = (input.value || "").trim();
@@ -799,7 +831,6 @@
             document.getElementById("iosBtnGroup2").style.display = "grid";
         }
 
-        // 💡 規則 3：確認更新或清除 iOS 訂閱（傳送空值即為取消訂閱，恢復初始狀態）
         function confirmIosUpdate() {
             const input = document.getElementById('iosIcsInput');
             let url = input.value.trim();
@@ -809,7 +840,7 @@
                     localStorage.removeItem('phone_ios_ics_url');
                     input.dataset.rawUrl = "";
                     input.value = "";
-                    input.disabled = false; // 恢復為允許輸入
+                    input.disabled = false;
                     input.placeholder = "請貼上完整的 iCloud webcal 訂閱網址...";
 
                     document.getElementById("iosBtnGroup2").style.display = "none";
