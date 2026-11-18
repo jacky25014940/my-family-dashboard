@@ -1,5 +1,5 @@
 console.log("==========================================");
-console.log("   🚀 伺服器已啟動 - 版本: 20261109 02:00  ");
+console.log("   🚀 伺服器已啟動 - 版本: 20261118 16:00  ");
 console.log("==========================================");
 
 const http = require('http');
@@ -656,20 +656,39 @@ server.on('upgrade', (req, socket, head) => {
                     }
                     const urls = roomIcsUrls.get(targetDash);
                     
-                    // 💡 修正快取刪除的 Key 格式，確保與 fetchAndParseIcs 一致
                     icsCache.delete(`google_${urls.googleUrl}`);
                     icsCache.delete(`ios_${urls.iosUrl}`);
 
-                    if (data.calendarType === 'ios') {
-                        urls.iosUrl = data.icsUrl || '';
+                    let updatedCalendarType = data.calendarType || 'google';
+                    let updatedIcsUrl = data.icsUrl || '';
+
+                    if (updatedCalendarType === 'ios') {
+                        urls.iosUrl = updatedIcsUrl;
                     } else {
-                        urls.googleUrl = data.icsUrl || '';
+                        urls.googleUrl = updatedIcsUrl;
                     }
                     roomIcsUrls.set(targetDash, urls);
                     saveIcsConfig();
 
-                    console.log(`[SYSTEM] 已更新房間 [${targetDash}] 的 ${data.calendarType} 訂閱網址`);
-                    broadcastAdminLog(`[SYSTEM] 已更新房間 [${targetDash}] 的 ${data.calendarType} 訂閱網址`, targetDash);
+                    console.log(`[SYSTEM] 已更新房間 [${targetDash}] 的 ${updatedCalendarType} 訂閱網址`);
+                    broadcastAdminLog(`[SYSTEM] 已更新房間 [${targetDash}] 的 ${updatedCalendarType} 訂閱網址`, targetDash);
+
+                    // 💡 【關鍵補強】：主動將手機端更新的 ICS 網址推播給該房間的所有電視端 (TV)！
+                    const tvSockets = dashboardRooms.get(targetDash);
+                    if (tvSockets) {
+                        for (let s of tvSockets) {
+                            if (!s.destroyed) {
+                                // 1. 發送信令讓電視更新本地儲存與顯示狀態
+                                sendWs(s, {
+                                    type: 'update_ics_url',
+                                    calendarType: updatedCalendarType,
+                                    icsUrl: updatedIcsUrl
+                                });
+                                // 2. 同時觸發狀態回報給 Admin 更新燈號
+                                sendWs(s, { type: 'admin_query_room_status' });
+                            }
+                        }
+                    }
 
                     let allEvents = [];
                     let pending = 0;
@@ -678,7 +697,6 @@ server.on('upgrade', (req, socket, head) => {
                         pending--;
                         if (pending <= 0) {
                             broadcastAdminLog(`[SYSTEM] 網址更新後即時抓取完成，共 ${allEvents.length} 筆，主動推播給電視`, targetDash);
-                            const tvSockets = dashboardRooms.get(targetDash);
                             if (tvSockets) {
                                 for (let s of tvSockets) {
                                     if (!s.destroyed) {
@@ -693,10 +711,11 @@ server.on('upgrade', (req, socket, head) => {
                     if (urls.iosUrl) pending++;
 
                     if (pending === 0) {
-                        const tvSockets = dashboardRooms.get(targetDash);
                         if (tvSockets) {
                             for (let s of tvSockets) {
-                                if (!s.destroyed) sendWs(s, { type: 'ics_sync_result', calendars: [] });
+                                if (!s.destroyed) {
+                                    sendWs(s, { type: 'ics_sync_result', calendars: [] });
+                                }
                             }
                         }
                     } else {
@@ -896,7 +915,7 @@ server.on('upgrade', (req, socket, head) => {
                 }
                 return;
             }
-            
+
             if (data.type === 'ping') {
                 sendWs(socket, { type: 'pong' });
                 return;
