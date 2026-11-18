@@ -864,6 +864,39 @@ server.on('upgrade', (req, socket, head) => {
                 return;
             }
 
+            // 💡 15. 處理電視端主動同步設定檔 (Config Sync) 的請求
+            if (data.type === 'sync_room_config') {
+                const targetDash = data.dashboardId || currentDashboardId;
+                if (targetDash) {
+                    console.log(`[SYSTEM] 收到來自房號 [${targetDash}] 的設定檔同步請求`);
+                    
+                    // 1. 同步 ICS 訂閱網址
+                    if (data.googleUrl || data.iosUrl) {
+                        roomIcsUrls.set(targetDash, {
+                            googleUrl: data.googleUrl || '',
+                            iosUrl: data.iosUrl || ''
+                        });
+                        saveIcsConfig(); // 寫入 ics_config.json
+                    }
+
+                    // 2. 同步房間自訂設定 (Room Config)
+                    if (data.roomConfig) {
+                        roomConfigs.set(targetDash, data.roomConfig);
+                        saveRoomConfig(); // 寫入 room_config.json
+                    }
+
+                    // 回覆電視同步完成
+                    sendWs(socket, { 
+                        type: 'sync_room_config_result', 
+                        success: true, 
+                        message: '伺服器設定已與電視端對齊成功' 
+                    });
+                    
+                    broadcastAdminLog(`[SYSTEM] 房號 [${targetDash}] 設定檔已成功與伺服器對齊`, targetDash);
+                }
+                return;
+            }
+            
             if (data.type === 'ping') {
                 sendWs(socket, { type: 'pong' });
                 return;
