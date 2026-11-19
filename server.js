@@ -1,5 +1,6 @@
 console.log("==========================================");
-console.log("   🚀 伺服器已啟動 - 版本: 20261118 16:00  ");
+console.log("   🚀 伺服器已啟動 - 版本: 20261119 17:00  ");
+console.log(" 移除google ics, 加入OAuth2機制            ");
 console.log("==========================================");
 
 const http = require('http');
@@ -13,6 +14,23 @@ const SECRET_KEY = "my_innovation_secret_2026";
 const ADMIN_SECRET_KEY = "admin_secure_key_2026"; 
 const ICS_CONFIG_FILE = path.resolve(__dirname, 'ics_config.json');
 const ROOM_CONFIG_FILE = path.resolve(__dirname, 'room_config.json');
+
+// Google Oauth2
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || "https://titan-family-dashboard-poc.onrender.com/auth/google/callback";
+const GOOGLE_AUTH_TTL_MS = 10 * 60 * 1000; // 10 分鐘逾時
+// state -> { dashboardId, createdAt, expiresAt }
+const pendingGoogleAuthStates = new Map();
+// 定期清理過期的 OAuth state
+setInterval(() => {
+    const now = Date.now();
+    for (const [stateKey, info] of pendingGoogleAuthStates.entries()) {
+        if (!info || now > info.expiresAt) {
+            pendingGoogleAuthStates.delete(stateKey);
+        }
+    }
+}, 60 * 1000);
 
 const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -40,6 +58,12 @@ const server = http.createServer((req, res) => {
             res.end('403 Forbidden: 您沒有權限存取此儀表板');
             return;
         }
+    }
+
+    // 攔截google OAuth callback
+    if (urlPath === '/auth/google/callback') {
+        handleGoogleOAuthCallback(parsedUrl, res);
+        return;
     }
 
     const safeRoot = path.resolve(__dirname);
@@ -405,6 +429,162 @@ function fetchAndParseIcs(url, calendarType, callback) {
     });
 }
 
+// google OAuth相關
+function postFormUrlEncoded(hostname, pathName, paramsObj) {
+    return new Promise((resolve, reject) => {
+        const bodyStr = new URLSearchParams(paramsObj).toString();
+        const reqOptions = {
+            hostname: hostname,
+            path: pathName,
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Length": Buffer.byteLength(bodyStr)
+            }
+        };
+
+        const tokenReq = https.request(reqOptions, (tokenRes) => {
+            let raw = "";
+            tokenRes.on("data", (chunk) => { raw += chunk; });
+            tokenRes.on("end", () => {
+                let parsed = null;
+                if (raw) {
+                    try { parsed = JSON.parse(raw); } catch (e) { parsed = raw; }
+                }
+                resolve({ statusCode: tokenRes.statusCode, body: parsed });
+            });
+        });
+
+        tokenReq.on("error", reject);
+        tokenReq.write(bodyStr);
+        tokenReq.end();
+    });
+}
+// google OAuth相關
+function pushBindResultToDashboard(dashboardId, payload) {
+    const sockets = dashboardRooms.get(dashboardId);
+    if (!sockets || sockets.size === 0) {
+        return false;
+    }
+    let sentCount = 0;
+    for (const tvSocket of sockets) {
+        if (!tvSocket.destroyed) {
+            sendWs(tvSocket, payload);
+            sentCount++;
+        }
+    }
+    return sentCount > 0;
+}
+// google OAuth相關
+async function handleGoogleOAuthCallback(parsedUrl, res) {
+    const code = parsedUrl.searchParams.get("code");
+    const state = parsedUrl.searchParams.get("state");
+    const oauthError = parsedUrl.searchParams.get("error");
+
+    if (!state || !pendingGoogleAuthStates.has(state)) {
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("<h3>Google 綁定失敗：無效或已過期的 state 參數，請回電視端重新發起綁定。</h3>");
+        return;
+    }
+
+    const sessionInfo = pendingGoogleAuthStates.get(state);
+    pendingGoogleAuthStates.delete(state);
+    const targetDashboardId = sessionInfo.dashboardId;
+
+    if (Date.now() > sessionInfo.expiresAt) {
+        pushBindResultToDashboard(targetDashboardId, {
+            type: "google_oauth_bind_result",
+            success: false,
+            state: state,
+            message: "授權工作階段已逾時，請重新發起綁定"
+        });
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("<h3>Google 綁定逾時，請回電視端重新操作。</h3>");
+        return;
+    }
+
+    if (oauthError || !code) {
+        const errMsg = oauthError ? ("使用者取消或拒絕授權: " + oauthError) : "未收到授權碼 code";
+        pushBindResultToDashboard(targetDashboardId, {
+            type: "google_oauth_bind_result",
+            success: false,
+            state: state,
+            message: errMsg
+        });
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("<h3>Google 授權未完成：" + errMsg + "</h3>");
+        return;
+    }
+
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+        pushBindResultToDashboard(targetDashboardId, {
+            type: "google_oauth_bind_result",
+            success: false,
+            state: state,
+            message: "伺服器尚未設定 GOOGLE_CLIENT_ID 或 GOOGLE_CLIENT_SECRET"
+        });
+        res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("<h3>伺服器端尚未設定 Google OAuth 憑證。</h3>");
+        return;
+    }
+
+    try {
+        const tokenResp = await postFormUrlEncoded("oauth2.googleapis.com", "/token", {
+            code: code,
+            client_id: GOOGLE_CLIENT_ID,
+            client_secret: GOOGLE_CLIENT_SECRET,
+            redirect_uri: GOOGLE_REDIRECT_URI,
+            grant_type: "authorization_code"
+        });
+
+        if (tokenResp.statusCode !== 200 || !tokenResp.body || !tokenResp.body.refresh_token) {
+            const detailErr = (tokenResp.body && tokenResp.body.error_description) ||
+                              (tokenResp.body && tokenResp.body.error) ||
+                              "未取得 refresh_token（請確認已帶 prompt=consent 或曾撤銷舊授權）";
+            console.error("[Google OAuth] 換取 refresh_token 失敗:", tokenResp.statusCode, tokenResp.body);
+            pushBindResultToDashboard(targetDashboardId, {
+                type: "google_oauth_bind_result",
+                success: false,
+                state: state,
+                message: detailErr
+            });
+            res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+            res.end("<h3>換取 refresh_token 失敗：" + detailErr + "</h3>");
+            return;
+        }
+
+        const tokenData = tokenResp.body;
+        const pushed = pushBindResultToDashboard(targetDashboardId, {
+            type: "google_oauth_bind_result",
+            success: true,
+            state: state,
+            refreshToken: tokenData.refresh_token,
+            accessToken: tokenData.access_token || "",
+            expiresIn: tokenData.expires_in || 3600,
+            calendarId: "primary"
+        });
+
+        console.log(`[Google OAuth] 房號 [${targetDashboardId}] 取得 refresh_token 成功，推送電視狀態: ${pushed}`);
+        broadcastAdminLog(`[Google OAuth] 房號 [${targetDashboardId}] 綁定成功並已推送憑證`, targetDashboardId);
+
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(
+            "<h3>Google 帳號授權成功！</h3>" +
+            "<p>憑證已傳送至電視端（房號：" + targetDashboardId + "），您可以關閉此視窗並回到電視查看。</p>"
+        );
+    } catch (err) {
+        console.error("[Google OAuth] 交換 Token 發生例外:", err);
+        pushBindResultToDashboard(targetDashboardId, {
+            type: "google_oauth_bind_result",
+            success: false,
+            state: state,
+            message: "向 Google 換取 Token 時發生網路或系統錯誤"
+        });
+        res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("<h3>交換 Token 發生錯誤，請稍後再試。</h3>");
+    }
+}
+
 server.on('upgrade', (req, socket, head) => {
     const key = req.headers['sec-websocket-key'];
     const acceptKey = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
@@ -473,10 +653,6 @@ server.on('upgrade', (req, socket, head) => {
 
                 const urls = roomIcsUrls.get(currentDashboardId);
                 if (urls) {
-                    if (urls.googleUrl) {
-                        pending++;
-                        fetchAndParseIcs(urls.googleUrl, 'google', (events) => { allEvents = allEvents.concat(events); sendMergedCalendars(); });
-                    }
                     if (urls.iosUrl) {
                         pending++;
                         fetchAndParseIcs(urls.iosUrl, 'ios', (events) => { allEvents = allEvents.concat(events); sendMergedCalendars(); });
@@ -652,11 +828,10 @@ server.on('upgrade', (req, socket, head) => {
                 const targetDash = (currentClientType === 'phone') ? boundDashboardId : (data.targetDashboard || currentDashboardId);
                 if (targetDash) {
                     if (!roomIcsUrls.has(targetDash)) {
-                        roomIcsUrls.set(targetDash, { googleUrl: '', iosUrl: '' });
+                        roomIcsUrls.set(targetDash, { iosUrl: '' });
                     }
                     const urls = roomIcsUrls.get(targetDash);
                     
-                    icsCache.delete(`google_${urls.googleUrl}`);
                     icsCache.delete(`ios_${urls.iosUrl}`);
 
                     let updatedCalendarType = data.calendarType || 'google';
@@ -664,8 +839,6 @@ server.on('upgrade', (req, socket, head) => {
 
                     if (updatedCalendarType === 'ios') {
                         urls.iosUrl = updatedIcsUrl;
-                    } else {
-                        urls.googleUrl = updatedIcsUrl;
                     }
                     roomIcsUrls.set(targetDash, urls);
                     saveIcsConfig();
@@ -673,7 +846,7 @@ server.on('upgrade', (req, socket, head) => {
                     console.log(`[SYSTEM] 已更新房間 [${targetDash}] 的 ${updatedCalendarType} 訂閱網址`);
                     broadcastAdminLog(`[SYSTEM] 已更新房間 [${targetDash}] 的 ${updatedCalendarType} 訂閱網址`, targetDash);
 
-                    // 💡 【關鍵補強】：主動將手機端更新的 ICS 網址推播給該房間的所有電視端 (TV)！
+                    // 【補強】：主動將手機端更新的 ICS 網址推播給該房間的所有電視端 (TV)！
                     const tvSockets = dashboardRooms.get(targetDash);
                     if (tvSockets) {
                         for (let s of tvSockets) {
@@ -707,7 +880,6 @@ server.on('upgrade', (req, socket, head) => {
                         }
                     };
 
-                    if (urls.googleUrl) pending++;
                     if (urls.iosUrl) pending++;
 
                     if (pending === 0) {
@@ -719,12 +891,6 @@ server.on('upgrade', (req, socket, head) => {
                             }
                         }
                     } else {
-                        if (urls.googleUrl) {
-                            fetchAndParseIcs(urls.googleUrl, 'google', (events) => {
-                                allEvents = allEvents.concat(events);
-                                checkAndSend();
-                            });
-                        }
                         if (urls.iosUrl) {
                             fetchAndParseIcs(urls.iosUrl, 'ios', (events) => {
                                 allEvents = allEvents.concat(events);
@@ -743,7 +909,7 @@ server.on('upgrade', (req, socket, head) => {
                 broadcastAdminLog(`[SYSTEM] 收到房號 [${targetDash}] 的 ICS 同步請求，開始抓取...`, targetDash);
 
                 const urls = roomIcsUrls.get(targetDash);
-                if (!urls || (!urls.googleUrl && !urls.iosUrl)) {
+                if (!urls || !urls.iosUrl) {
                     broadcastAdminLog(`[SYSTEM] 房號 [${targetDash}] 沒有設定任何 ICS 網址`, targetDash);
                     sendWs(socket, { type: 'ics_sync_result', calendars: [] });
                     return;
@@ -760,15 +926,7 @@ server.on('upgrade', (req, socket, head) => {
                     }
                 };
 
-                if (urls.googleUrl) pending++;
                 if (urls.iosUrl) pending++;
-
-                if (urls.googleUrl) {
-                    fetchAndParseIcs(urls.googleUrl, 'google', (events) => {
-                        allEvents = allEvents.concat(events);
-                        checkAndSend();
-                    });
-                }
 
                 if (urls.iosUrl) {
                     fetchAndParseIcs(urls.iosUrl, 'ios', (events) => {
@@ -807,10 +965,6 @@ server.on('upgrade', (req, socket, head) => {
                             }
                         };
 
-                        if (urls.googleUrl) {
-                            pending++;
-                            fetchAndParseIcs(urls.googleUrl, 'google', (events) => { allEvents = allEvents.concat(events); sendMerged(); });
-                        }
                         if (urls.iosUrl) {
                             pending++;
                             fetchAndParseIcs(urls.iosUrl, 'ios', (events) => { allEvents = allEvents.concat(events); sendMerged(); });
@@ -890,9 +1044,8 @@ server.on('upgrade', (req, socket, head) => {
                     console.log(`[SYSTEM] 收到來自房號 [${targetDash}] 的設定檔同步請求`);
                     
                     // 1. 同步 ICS 訂閱網址
-                    if (data.googleUrl || data.iosUrl) {
+                    if (data.iosUrl) {
                         roomIcsUrls.set(targetDash, {
-                            googleUrl: data.googleUrl || '',
                             iosUrl: data.iosUrl || ''
                         });
                         saveIcsConfig(); // 寫入 ics_config.json
@@ -916,6 +1069,48 @@ server.on('upgrade', (req, socket, head) => {
                 return;
             }
 
+            // 產生 Google OAuth 綁定授權網址與 state
+            if (data.type === 'request_google_auth_url') {
+                const targetDash = (data.dashboardId || currentDashboardId || 'demo_tv').trim();
+                if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+                    sendWs(socket, {
+                        type: 'google_auth_url_error',
+                        message: '伺服器尚未設定 GOOGLE_CLIENT_ID 或 GOOGLE_CLIENT_SECRET'
+                    });
+                    return;
+                }
+
+                const state = crypto.randomBytes(16).toString('hex');
+                const now = Date.now();
+                pendingGoogleAuthStates.set(state, {
+                    dashboardId: targetDash,
+                    createdAt: now,
+                    expiresAt: now + GOOGLE_AUTH_TTL_MS
+                });
+
+                const authParams = new URLSearchParams({
+                    client_id: GOOGLE_CLIENT_ID,
+                    redirect_uri: GOOGLE_REDIRECT_URI,
+                    response_type: "code",
+                    scope: "https://www.googleapis.com/auth/calendar",
+                    access_type: "offline",
+                    prompt: "consent",
+                    state: state
+                });
+
+                const authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" + authParams.toString();
+                console.log(`[Google OAuth] 為房號 [${targetDash}] 產生授權網址, state=${state}`);
+                broadcastAdminLog(`[Google OAuth] 產生綁定授權網址 (state=${state.substring(0, 8)}...)`, targetDash);
+
+                sendWs(socket, {
+                    type: 'google_auth_url_result',
+                    authUrl: authUrl,
+                    state: state,
+                    expiresIn: Math.floor(GOOGLE_AUTH_TTL_MS / 1000)
+                });
+                return;
+            }
+            
             if (data.type === 'ping') {
                 sendWs(socket, { type: 'pong' });
                 return;
