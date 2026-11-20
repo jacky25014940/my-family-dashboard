@@ -66,6 +66,15 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
+    if (req.url === '/favicon.ico') {
+        res.writeHead(204);
+        res.end();
+        return;
+    }
+    const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+    let urlPath = req.url.split('?')[0].toLowerCase();
+    let tokenKey = parsedUrl.searchParams.get('key');
+
     if (req.method === 'OPTIONS') {
         if (urlPath === "/api/google/refresh-token") {
             res.writeHead(204, {
@@ -120,14 +129,6 @@ const server = http.createServer((req, res) => {
         })();
         return;
     }
-    if (req.url === '/favicon.ico') {
-        res.writeHead(204);
-        res.end();
-        return;
-    }
-    const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
-    let urlPath = req.url.split('?')[0].toLowerCase();
-    let tokenKey = parsedUrl.searchParams.get('key');
 
     if (urlPath === '/' || urlPath === '/a.html') {
         if (tokenKey !== SECRET_KEY) {
