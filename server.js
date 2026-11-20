@@ -60,6 +60,36 @@ function sendJsonResponse(res, statusCode, payload) {
     });
     res.end(JSON.stringify(payload));
 }
+// 取得google account info
+function fetchGoogleUserInfo(accessToken) {
+    return new Promise((resolve) => {
+        if (!accessToken) {
+            resolve({});
+            return;
+        }
+        const req = https.request({
+            hostname: "www.googleapis.com",
+            path: "/oauth2/v2/userinfo",
+            method: "GET",
+            headers: {
+                "Authorization": "Bearer " + accessToken
+            }
+        }, (resp) => {
+            let raw = "";
+            resp.on("data", (chunk) => { raw += chunk; });
+            resp.on("end", () => {
+                try {
+                    const parsed = raw ? JSON.parse(raw) : {};
+                    resolve(parsed || {});
+                } catch (e) {
+                    resolve({});
+                }
+            });
+        });
+        req.on("error", () => resolve({}));
+        req.end();
+    });
+}
 
 const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -645,6 +675,10 @@ async function handleGoogleOAuthCallback(parsedUrl, res) {
         }
 
         const tokenData = tokenResp.body;
+        const userInfo = await fetchGoogleUserInfo(tokenData.access_token);
+        const userEmail = userInfo.email || "";
+        const userName = userInfo.name || "";
+        const accountLabel = (userName && userEmail)? `${userName} (${userEmail})`: (userEmail || userName || "Google 帳號");
         const pushed = pushBindResultToDashboard(targetDashboardId, {
             type: "google_oauth_bind_result",
             success: true,
@@ -652,7 +686,10 @@ async function handleGoogleOAuthCallback(parsedUrl, res) {
             refreshToken: tokenData.refresh_token,
             accessToken: tokenData.access_token || "",
             expiresIn: tokenData.expires_in || 3600,
-            calendarId: "primary"
+            calendarId: "primary",
+            email: userEmail,
+            name: userName,
+            label: accountLabel
         });
 
         console.log(`[Google OAuth] 房號 [${targetDashboardId}] 取得 refresh_token 成功，推送電視狀態: ${pushed}`);
@@ -1190,7 +1227,7 @@ server.on('upgrade', (req, socket, head) => {
                     client_id: GOOGLE_CLIENT_ID,
                     redirect_uri: GOOGLE_REDIRECT_URI,
                     response_type: "code",
-                    scope: "https://www.googleapis.com/auth/calendar",
+                    scope: "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
                     access_type: "offline",
                     prompt: "consent",
                     state: state
