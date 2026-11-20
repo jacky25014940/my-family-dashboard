@@ -32,40 +32,34 @@ setInterval(() => {
     }
 }, 60 * 1000);
 // 換取google access_token
-app.post('/api/google/refresh-token', async (req, res) => {
-    const refreshToken = req.body && req.body.refreshToken ? String(req.body.refreshToken).trim() : '';
-    if (!refreshToken) {
-        return res.status(400).json({ success: false, message: '缺少 refreshToken' });
-    }
-    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-        return res.status(500).json({ success: false, message: '伺服器未設定 Google OAuth 憑證' });
-    }
-
-    try {
-        const tokenResp = await postFormUrlEncoded('oauth2.googleapis.com', '/token', {
-            client_id: GOOGLE_CLIENT_ID,
-            client_secret: GOOGLE_CLIENT_SECRET,
-            refresh_token: refreshToken,
-            grant_type: 'refresh_token'
+function readJsonBody(req) {
+    return new Promise((resolve, reject) => {
+        let raw = "";
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+            if (!raw) {
+                resolve({});
+                return;
+            }
+            try {
+                resolve(JSON.parse(raw));
+            } catch (e) {
+                reject(e);
+            }
         });
-
-        if (tokenResp.statusCode !== 200 || !tokenResp.body || !tokenResp.body.access_token) {
-            return res.status(400).json({
-                success: false,
-                message: (tokenResp.body && tokenResp.body.error_description) || '刷新 access_token 失敗'
-            });
-        }
-
-        return res.json({
-            success: true,
-            accessToken: tokenResp.body.access_token,
-            expiresIn: tokenResp.body.expires_in || 3600
-        });
-    } catch (err) {
-        console.error('[Google OAuth] refresh-token 例外:', err);
-        return res.status(500).json({ success: false, message: '刷新 Token 發生網路或系統錯誤' });
-    }
-});
+        req.on("error", reject);
+    });
+}
+// 換取google access_token
+function sendJsonResponse(res, statusCode, payload) {
+    res.writeHead(statusCode, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+    });
+    res.end(JSON.stringify(payload));
+}
 
 const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -73,11 +67,59 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
-        res.writeHead(204);
+        if (urlPath === "/api/google/refresh-token") {
+            res.writeHead(204, {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type"
+            });
+        } else {
+            res.writeHead(204);
+        }
         res.end();
         return;
     }
+    if (req.method === "POST" && urlPath === "/api/google/refresh-token") {
+        (async () => {
+            try {
+                const body = await readJsonBody(req);
+                const refreshToken = body && body.refreshToken ? String(body.refreshToken).trim() : "";
+                if (!refreshToken) {
+                    sendJsonResponse(res, 400, { success: false, message: "缺少 refreshToken" });
+                    return;
+                }
+                if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+                    sendJsonResponse(res, 500, { success: false, message: "伺服器未設定 Google OAuth 憑證" });
+                    return;
+                }
 
+                const tokenResp = await postFormUrlEncoded("oauth2.googleapis.com", "/token", {
+                    client_id: GOOGLE_CLIENT_ID,
+                    client_secret: GOOGLE_CLIENT_SECRET,
+                    refresh_token: refreshToken,
+                    grant_type: "refresh_token"
+                });
+
+                if (tokenResp.statusCode !== 200 || !tokenResp.body || !tokenResp.body.access_token) {
+                    sendJsonResponse(res, 400, {
+                        success: false,
+                        message: (tokenResp.body && tokenResp.body.error_description) || "刷新 access_token 失敗"
+                    });
+                    return;
+                }
+
+                sendJsonResponse(res, 200, {
+                    success: true,
+                    accessToken: tokenResp.body.access_token,
+                    expiresIn: tokenResp.body.expires_in || 3600
+                });
+            } catch (err) {
+                console.error("[Google OAuth] refresh-token 例外:", err);
+                sendJsonResponse(res, 500, { success: false, message: "刷新 Token 發生網路或系統錯誤" });
+            }
+        })();
+        return;
+    }
     if (req.url === '/favicon.ico') {
         res.writeHead(204);
         res.end();
