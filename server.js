@@ -837,8 +837,9 @@ server.on('upgrade', (req, socket, head) => {
                                 name: data.name,
                                 token: data.token,
                                 roomId: data.roomId,
-                                googleIcsUrl: data.googleIcsUrl,
-                                iosIcsUrl: data.iosIcsUrl
+                                iosIcsUrl: data.iosIcsUrl,
+                                googleBound: !!data.googleBound,
+                                googleAccountLabel: data.googleAccountLabel || ''
                             });
                         } else {
                             sendWs(phoneSock, { type: 'register_error', message: data.message || '註冊失敗' });
@@ -868,6 +869,13 @@ server.on('upgrade', (req, socket, head) => {
                 broadcastAdminLog(`📥 收到 TV(${data.roomId}) 房號狀態更新，轉發給 Admin`);
                 for (let adminSocket of activeAdminSockets) {
                     if (!adminSocket.destroyed) sendWs(adminSocket, data);
+                }
+                if (data.roomId) {
+                    for (let phoneSock of activePhoneSockets) {
+                        if (!phoneSock.destroyed && phoneSock.boundDashboardId === data.roomId) {
+                            sendWs(phoneSock, data);
+                        }
+                    }
                 }
                 return;
             }
