@@ -306,7 +306,7 @@ function broadcastAdminLog(message, dashboardId = 'SYSTEM') {
     }
 }
 
-function parseIcsContent(icsText, calendarType = 'google') {
+function parseIcsContent(icsText, calendarType = 'ios') {
     const events = [];
     const rawLines = icsText.split(/\r\n|\n|\r/);
     const lines = [];
@@ -410,16 +410,18 @@ function parseIcsDateObj(lineStr) {
 
 function addEventInstance(events, currentEvent, startObj, endObj, calendarType) {
     const dateStr = startObj.toISOString().split('T')[0];
-    const uniqueKey = (currentEvent.uid || currentEvent.summary) + '_' + dateStr;
+    const baseKey = currentEvent.uid || currentEvent.summary || 'event';
+    const uniqueKey = `${calendarType}_${baseKey}_${dateStr}`;
     const isIos = (calendarType === 'ios');
     events.push({
         id: 'ical-' + crypto.createHash('md5').update(uniqueKey).digest('hex').substring(0, 10),
-        deviceId: isIos ? 'IOS_ICAL' : 'GOOGLE_ICAL',
-        senderName: isIos ? 'iCloud 行事曆' : 'Google 行事曆',
+        deviceId: isIos ? 'IOS_ICAL' : 'ICS_CALENDAR',
+        senderName: isIos ? 'iCloud 行事曆' : 'iCal 行事曆',
+        source: isIos ? 'icloud' : 'ics',
         title: currentEvent.summary,
         start: startObj.toISOString(),
         end: endObj.toISOString(),
-        isAllDay: !!currentEvent.isAllDay, // 💡 傳遞整天行程標記
+        isAllDay: !!currentEvent.isAllDay,
         timestamp: new Date().toISOString()
     });
 }
@@ -471,7 +473,20 @@ function expandRecurringEvents(events, currentEvent, baseStart, duration, rruleS
     }
 }
 
-function fetchAndParseIcs(url, calendarType, callback) {
+function normalizeIcsUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return '';
+    let clean = rawUrl.trim();
+    if (!clean) return '';
+    if (/^webcal:\/\//i.test(clean)) {
+        clean = clean.replace(/^webcal:\/\//i, 'https://');
+    } else if (!/^https?:\/\//i.test(clean)) {
+        clean = 'https://' + clean;
+    }
+    return clean;
+}
+
+function fetchAndParseIcs(rawUrl, calendarType, callback) {
+    const url = normalizeIcsUrl(rawUrl);
     if (!url) { callback([]); return; }
     const cacheKey = `${calendarType}_${url}`;
     const now = Date.now();
@@ -910,7 +925,7 @@ server.on('upgrade', (req, socket, head) => {
                     
                     icsCache.delete(`ios_${urls.iosUrl}`);
 
-                    let updatedCalendarType = data.calendarType || 'google';
+                    let updatedCalendarType = data.calendarType || 'ios';
                     let updatedIcsUrl = data.icsUrl || '';
 
                     if (updatedCalendarType === 'ios') {
@@ -981,6 +996,13 @@ server.on('upgrade', (req, socket, head) => {
             // 11. 處理電視端或前台要求手動觸發 ICS 同步的請求
             if (data.type === 'request_ics_sync') {
                 const targetDash = data.dashboard || data.targetDashboard || currentDashboardId || 'demo_tv';
+                if (data.iosIcsUrl && String(data.iosIcsUrl).trim()) {
+                    const currentCfg = roomIcsUrls.get(targetDash) || {};
+                    currentCfg.iosUrl = String(data.iosIcsUrl).trim();
+                    roomIcsUrls.set(targetDash, currentCfg);
+                    icsCache.delete(`ios_${currentCfg.iosUrl}`);
+                    saveIcsConfig();
+                }
                 console.log(`[SYSTEM] 收到房號 [${targetDash}] 的 ICS 同步請求，開始抓取...`);
                 broadcastAdminLog(`[SYSTEM] 收到房號 [${targetDash}] 的 ICS 同步請求，開始抓取...`, targetDash);
 
@@ -1120,9 +1142,9 @@ server.on('upgrade', (req, socket, head) => {
                     console.log(`[SYSTEM] 收到來自房號 [${targetDash}] 的設定檔同步請求`);
                     
                     // 1. 同步 ICS 訂閱網址
-                    if (data.iosUrl) {
+                    if (typeof data.iosUrl === 'string') {
                         roomIcsUrls.set(targetDash, {
-                            iosUrl: data.iosUrl || ''
+                            iosUrl: data.iosUrl.trim()
                         });
                         saveIcsConfig(); // 寫入 ics_config.json
                     }
