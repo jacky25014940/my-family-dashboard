@@ -465,8 +465,8 @@
                     }
 
                     if (data.type === "registered_success") {
-                        deviceId = data.deviceId;
-                        currentRoomId = data.roomId || "demo_tv";
+                        deviceId = data.deviceId || deviceId;
+                        currentRoomId = data.roomId || currentRoomId || "demo_tv";
                         localStorage.setItem('tv_room_id', currentRoomId);
                         updateTvRoomInfo(currentRoomId);
                         if (data.token) localStorage.setItem('tv_device_token', data.token);
@@ -475,15 +475,25 @@
                         if (iUrl) localStorage.setItem('phone_ios_ics_url', iUrl);
                         else localStorage.removeItem('phone_ios_ics_url');
 
+                        if (typeof setIcsUiState === "function") {
+                            setIcsUiState(true, iUrl);
+                        }
+
                         const googleBound = !!(data.googleBound || data.googleConnected || data.googleAccountEmail);
                         const googleAccountLabel = data.googleAccountLabel || data.googleAccountEmail || "";
-                        setIcsUiState(true, iUrl);
-                        updateGoogleBindStatus(googleBound, googleAccountLabel);
+                        if (typeof updateGoogleBindStatus === "function") {
+                            updateGoogleBindStatus(googleBound, googleAccountLabel);
+                        }
 
                         const nameInput = document.getElementById("userNameInput");
-                        if (nameInput) customName = nameInput.value.trim();
-                        localStorage.setItem('phone_device_id', deviceId);
-                        localStorage.setItem('phone_custom_name', customName);
+                        if (nameInput && nameInput.value.trim()) {
+                            customName = nameInput.value.trim();
+                        } else if (data.name) {
+                            customName = data.name;
+                        }
+
+                        if (deviceId) localStorage.setItem('phone_device_id', deviceId);
+                        if (customName) localStorage.setItem('phone_custom_name', customName);
 
                         const targetTvInput = document.getElementById("targetTvInput");
                         if (targetTvInput) {
@@ -491,16 +501,27 @@
                             targetTvInput.disabled = true;
                         }
 
-                        document.getElementById("log").textContent = `已成功連線至房間：${currentRoomId} (裝置代號: ${deviceId})`;
-                        document.getElementById("deviceTitle").textContent = `📱 模擬手機: ${customName} (${deviceId})`;
-                        if (nameInput) nameInput.disabled = true;
-                        document.getElementById("regBtn").disabled = true;
-                        document.getElementById("reconnectBtn").disabled = false;
-                        document.getElementById("unregBtn").disabled = false;
+                        const logEl = document.getElementById("log");
+                        if (logEl) logEl.textContent = `已成功連線至房間：${currentRoomId} (裝置代號: ${deviceId})`;
 
-                        ws.send(JSON.stringify({ type: "phone_name_sync", deviceId: deviceId, name: customName }));
+                        const titleEl = document.getElementById("deviceTitle");
+                        if (titleEl) titleEl.textContent = `📱 模擬手機: ${customName} (${deviceId})`;
+
+                        if (nameInput) nameInput.disabled = true;
+                        const regBtn = document.getElementById("regBtn");
+                        const reconnectBtn = document.getElementById("reconnectBtn");
+                        const unregBtn = document.getElementById("unregBtn");
+                        if (regBtn) regBtn.disabled = true;
+                        if (reconnectBtn) reconnectBtn.disabled = false;
+                        if (unregBtn) unregBtn.disabled = false;
+
+                        if (ws && ws.readyState === WebSocket.OPEN && deviceId) {
+                            ws.send(JSON.stringify({ type: "phone_name_sync", deviceId: deviceId, name: customName }));
+                        }
+
                         updateStatus("connected");
                         updateSubStatus('ws', true);
+                        isRegistering = false;
                     }
 
                     if (data.type === "register_error") {
