@@ -31,6 +31,41 @@ setInterval(() => {
         }
     }
 }, 60 * 1000);
+// 換取google access_token
+app.post('/api/google/refresh-token', async (req, res) => {
+    const refreshToken = req.body && req.body.refreshToken ? String(req.body.refreshToken).trim() : '';
+    if (!refreshToken) {
+        return res.status(400).json({ success: false, message: '缺少 refreshToken' });
+    }
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+        return res.status(500).json({ success: false, message: '伺服器未設定 Google OAuth 憑證' });
+    }
+
+    try {
+        const tokenResp = await postFormUrlEncoded('oauth2.googleapis.com', '/token', {
+            client_id: GOOGLE_CLIENT_ID,
+            client_secret: GOOGLE_CLIENT_SECRET,
+            refresh_token: refreshToken,
+            grant_type: 'refresh_token'
+        });
+
+        if (tokenResp.statusCode !== 200 || !tokenResp.body || !tokenResp.body.access_token) {
+            return res.status(400).json({
+                success: false,
+                message: (tokenResp.body && tokenResp.body.error_description) || '刷新 access_token 失敗'
+            });
+        }
+
+        return res.json({
+            success: true,
+            accessToken: tokenResp.body.access_token,
+            expiresIn: tokenResp.body.expires_in || 3600
+        });
+    } catch (err) {
+        console.error('[Google OAuth] refresh-token 例外:', err);
+        return res.status(500).json({ success: false, message: '刷新 Token 發生網路或系統錯誤' });
+    }
+});
 
 const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -280,8 +315,7 @@ function parseIcsContent(icsText, calendarType = 'google') {
     broadcastAdminLog(`[ICS 解析完畢] 類別: ${calendarType}, 總共解析出有效行程筆數: ${events.length}`, 'SYSTEM');
     return events;
 }
-
-// 💡 萬國通用的動態時區解析函式（不寫死任何特定國家/城市）
+// 萬國通用的動態時區解析函式（不寫死任何特定國家/城市）
 function parseIcsDateObj(lineStr) {
     if (!lineStr) return new Date();
     
@@ -428,7 +462,6 @@ function fetchAndParseIcs(url, calendarType, callback) {
         callback([]); 
     });
 }
-
 // google OAuth相關
 function postFormUrlEncoded(hostname, pathName, paramsObj) {
     return new Promise((resolve, reject) => {
