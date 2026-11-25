@@ -109,7 +109,8 @@
     var wsReady = false;
     var pendingWsMessages = [];
     var STORAGE_KEY_DASH = "order_sim_target_dashboard";
-
+    var pendingStageOverride = {}; // orderId -> { statusCode, expiresAt }
+    
     // 對齊 server.js 的 6 個外送階段與預設秒數（1x 基準）
     var FLOW_STAGES = [
       { code: "ORDER_PLACED", shortName: "等待接單", label: "已送出訂單，等待餐廳接單", baseSec: 60, eta: 20 },
@@ -356,7 +357,12 @@
     function setOrderStage(orderId, selectId) {
       var sel = document.getElementById(selectId);
       if (!sel || !sel.value) return;
-      updateSimOrder(orderId, { status: sel.value });
+      var chosenCode = sel.value;
+      pendingStageOverride[orderId] = {
+        statusCode: chosenCode,
+        expiresAt: Date.now() + 8000
+      };
+      updateSimOrder(orderId, { status: chosenCode });
     }
 
     function togglePauseOrder(orderId, currentPaused) {
@@ -394,6 +400,18 @@
     }
 
     function loadOrderList() {
+      var activeEl = document.activeElement;
+      var focusedSelectId = (activeEl && activeEl.tagName === "SELECT" && activeEl.id && activeEl.id.indexOf("stageSel_") === 0)
+        ? activeEl.id
+        : null;
+      var focusedSelectValue = focusedSelectId ? activeEl.value : null;
+
+      var draftSelectValues = {};
+      var allSelects = document.querySelectorAll('select[id^="stageSel_"]');
+      for (var s = 0; s < allSelects.length; s++) {
+        draftSelectValues[allSelects[s].id] = allSelects[s].value;
+      }
+
       var xhr = new XMLHttpRequest();
       xhr.open("GET", "/api/sim-orders", true);
       xhr.onreadystatechange = function () {
@@ -405,9 +423,16 @@
             return;
           }
           var html = "";
+          var nowMs = Date.now();
           for (var i = data.orders.length - 1; i >= 0; i--) {
             var o = data.orders[i];
-            var code = o.statusCode || o.status || "";
+            var serverCode = o.statusCode || o.status || "";
+            var override = pendingStageOverride[o.id];
+            if (override && (nowMs > override.expiresAt || serverCode === override.statusCode)) {
+              delete pendingStageOverride[o.id];
+              override = null;
+            }
+            var code = override ? override.statusCode : serverCode;
             var isFinishedOrCancelled = (code === "DELIVERED" || code === "CANCELLED");
             var pillClass = "status-pill";
             if (code === "CANCELLED") {
@@ -425,7 +450,7 @@
             html += '<div style="margin:4px 0">狀態：<span class="' + pillClass + '">' + escapeHtml(code) + '</span> ' + escapeHtml(o.statusLabel) + (!isFinishedOrCancelled ? (o.paused ? ' <b>[已暫停自動推進]</b>' : ' <span style="color:#058a49">[自動倒數中]</span>') : '') + ' | ETA：<b>' + escapeHtml(String(o.etaMinutes)) + '</b> 分鐘</div>';
             html += '<div>連結：<a href="' + safeUrl + '" target="_blank">' + safeUrl + '</a></div>';
 
-            html += renderOrderFlowDiagram(o);
+            html += renderOrderFlowDiagram(Object.assign({}, o, { statusCode: code, status: code }));
 
             html += '<div class="ctrl-bar">';
             html += '<button type="button" onclick="advanceStage(\'' + escapeHtml(o.id) + '\')">推進下一階段</button>';
@@ -439,6 +464,22 @@
             html += '</div></div>';
           }
           listEl.innerHTML = html;
+
+          for (var sid in draftSelectValues) {
+            if (Object.prototype.hasOwnProperty.call(draftSelectValues, sid)) {
+              var restoredSel = document.getElementById(sid);
+              if (restoredSel && draftSelectValues[sid]) {
+                restoredSel.value = draftSelectValues[sid];
+              }
+            }
+          }
+          if (focusedSelectId) {
+            var refocused = document.getElementById(focusedSelectId);
+            if (refocused) {
+              if (focusedSelectValue) refocused.value = focusedSelectValue;
+              try { refocused.focus(); } catch (e) {}
+            }
+          }
         }
       };
       xhr.send();

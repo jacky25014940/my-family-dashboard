@@ -22,6 +22,9 @@ const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || "https://titan-fa
 const GOOGLE_AUTH_TTL_MS = 10 * 60 * 1000; // 10 分鐘逾時
 const pendingGoogleAuthStates = new Map();
 
+// Uber Fetch 
+const UBER_FETCH_S = 5;
+
 setInterval(() => {
     const now = Date.now();
     for (const [stateKey, info] of pendingGoogleAuthStates.entries()) {
@@ -192,7 +195,7 @@ function applyStageToOrder(order, stageIndex) {
 }
 
 function createSimOrder(payload, req) {
-    const orderId = 'sim_' + crypto.randomBytes(4).toString('hex');
+    const orderId = 'order_' + crypto.randomBytes(4).toString('hex');
     const nowIso = new Date().toISOString();
     const speedMultiplier = Number(payload && payload.speedMultiplier) > 0 ? Number(payload.speedMultiplier) : 1;
 
@@ -200,11 +203,11 @@ function createSimOrder(payload, req) {
         id: orderId,
         trackingUrl: buildSimTrackingUrl(req, orderId),
         targetDashboard: (payload && payload.targetDashboard) ? String(payload.targetDashboard).trim() : '',
-        merchantName: (payload && payload.merchantName) ? String(payload.merchantName) : '測試外送餐廳（中和店）',
-        customerAddress: (payload && payload.customerAddress) ? String(payload.customerAddress) : '新北市中和區景平路測試地址',
+        merchantName: (payload && payload.merchantName) ? String(payload.merchantName) : '冠捷科技餐廳（中和總公司）',
+        customerAddress: (payload && payload.customerAddress) ? String(payload.customerAddress) : '新北市中和區景平路摩天大樓99',
         items: Array.isArray(payload && payload.items) && payload.items.length > 0
             ? payload.items
-            : [{ name: '模擬主餐', qty: 1 }],
+            : [{ name: '冠捷吃到飽全餐', qty: 1 }],
         courierName: (payload && payload.courierName) ? String(payload.courierName) : '王小明',
         speedMultiplier: speedMultiplier,
         paused: Boolean(payload && payload.paused),
@@ -755,7 +758,7 @@ function startUberTrackingSession(trackingUrl, targetDash) {
     };
 
     executeFetch();
-    session.timer = setInterval(executeFetch, 45 * 1000);
+    session.timer = setInterval(executeFetch, UBER_FETCH_S * 1000);
 }
 
 function sendWs(socket, dataObj) {
