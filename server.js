@@ -1,6 +1,6 @@
 console.log("==========================================");
-console.log("   🚀 伺服器已啟動 - 版本: 20261119 17:00  ");
-console.log(" 移除google ics, 加入OAuth2機制            ");
+console.log("   🚀 伺服器已啟動 - 版本: 20261125 10:30  ");
+console.log(" 加入外送訂單機制（貼近真實 Uber 流程） "     );
 console.log("==========================================");
 
 const http = require('http');
@@ -10,8 +10,8 @@ const crypto = require('crypto');
 const https = require('https');
 const { fetchUberTrackingData } = require('./uberTracker');
 
-const SECRET_KEY = "my_innovation_secret_2026"; 
-const ADMIN_SECRET_KEY = "admin_secure_key_2026"; 
+const SECRET_KEY = "my_innovation_secret_2026";
+const ADMIN_SECRET_KEY = "admin_secure_key_2026";
 const ICS_CONFIG_FILE = path.resolve(__dirname, 'ics_config.json');
 const ROOM_CONFIG_FILE = path.resolve(__dirname, 'room_config.json');
 
@@ -20,9 +20,8 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || "https://titan-family-dashboard-poc.onrender.com/auth/google/callback";
 const GOOGLE_AUTH_TTL_MS = 10 * 60 * 1000; // 10 分鐘逾時
-// state -> { dashboardId, createdAt, expiresAt }
 const pendingGoogleAuthStates = new Map();
-// 定期清理過期的 OAuth state
+
 setInterval(() => {
     const now = Date.now();
     for (const [stateKey, info] of pendingGoogleAuthStates.entries()) {
@@ -31,7 +30,7 @@ setInterval(() => {
         }
     }
 }, 60 * 1000);
-// 換取google access_token
+
 function readJsonBody(req) {
     return new Promise((resolve, reject) => {
         let raw = "";
@@ -50,7 +49,7 @@ function readJsonBody(req) {
         req.on("error", reject);
     });
 }
-// 換取google access_token
+
 function sendJsonResponse(res, statusCode, payload) {
     res.writeHead(statusCode, {
         "Content-Type": "application/json; charset=utf-8",
@@ -60,7 +59,7 @@ function sendJsonResponse(res, statusCode, payload) {
     });
     res.end(JSON.stringify(payload));
 }
-// 取得google account info
+
 function fetchGoogleUserInfo(accessToken) {
     return new Promise((resolve) => {
         if (!accessToken) {
@@ -89,6 +88,362 @@ function fetchGoogleUserInfo(accessToken) {
         req.on("error", () => resolve({}));
         req.end();
     });
+}
+
+// ==========================================
+// 模擬外送訂單系統 & Tracking URL 引擎（貼近真實 Uber Eats 流程）
+// ==========================================
+const SIM_ORDERS_FILE = path.resolve(__dirname, 'sim_orders.json');
+const simOrders = new Map(); // orderId -> orderObj
+
+// 貼近真實 Uber Eats 的外送階段（statusCode 對應流程階段，etaMinutes 為該階段起算預估分鐘數）
+const ORDER_STAGES = [
+    { status: 'ORDER_PLACED', label: '已送出訂單，等待餐廳接單', durationSec: 60, eta: 20, etaDecayMode: 'hold' },
+    { status: 'PREPARING', label: '餐廳正在準備您的餐點', durationSec: 360, eta: 19, etaDecayMode: 'slow' },
+    { status: 'COURIER_TO_STORE', label: '外送合作夥伴正前往餐廳', durationSec: 240, eta: 13, etaDecayMode: 'slow' },
+    { status: 'PICKING_UP', label: '外送合作夥伴正在餐廳取餐', durationSec: 120, eta: 9, etaDecayMode: 'hold' },
+    { status: 'EN_ROUTE_TO_DROPOFF', label: '外送合作夥伴正前往您的地點', durationSec: 420, eta: 7, etaDecayMode: 'steady' },
+    { status: 'DELIVERED', label: '餐點已送達', durationSec: 0, eta: 0, etaDecayMode: 'none' }
+];
+
+function computeRealisticEta(order, nowMs) {
+    const safeIdx = Math.max(0, Math.min(order.stageIndex || 0, ORDER_STAGES.length - 1));
+    const stage = ORDER_STAGES[safeIdx];
+    if (!stage || stage.status === 'DELIVERED' || stage.durationSec <= 0) {
+        return 0;
+    }
+
+    const nextStage = ORDER_STAGES[safeIdx + 1];
+    const startEta = typeof stage.eta === 'number' ? stage.eta : 0;
+    const endEta = nextStage && typeof nextStage.eta === 'number' ? nextStage.eta : 0;
+
+    if (!nextStage || endEta >= startEta) {
+        return startEta;
+    }
+
+    const elapsedSec = ((nowMs - (order.stageStartedAt || nowMs)) / 1000) * (order.speedMultiplier || 1);
+    const ratio = Math.max(0, Math.min(1, elapsedSec / stage.durationSec));
+
+    let easedRatio = ratio;
+    if (stage.etaDecayMode === 'hold') {
+        // 前 70% 時間維持原 ETA，尾段才微降 1 分鐘
+        easedRatio = ratio < 0.7 ? 0 : ((ratio - 0.7) / 0.3) * 0.25;
+    } else if (stage.etaDecayMode === 'slow') {
+        // 備餐與前往餐廳階段較平緩
+        easedRatio = Math.pow(ratio, 1.45);
+    } else {
+        // 送餐途中較明顯下降
+        easedRatio = Math.pow(ratio, 0.85);
+    }
+
+    const calculated = Math.round(startEta - (startEta - endEta) * easedRatio);
+    return Math.max(endEta, Math.min(startEta, calculated));
+}
+
+function loadSimOrders() {
+    try {
+        if (!fs.existsSync(SIM_ORDERS_FILE)) return;
+        const raw = fs.readFileSync(SIM_ORDERS_FILE, 'utf8');
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+            for (let i = 0; i < arr.length; i++) {
+                if (arr[i] && arr[i].id) {
+                    simOrders.set(arr[i].id, arr[i]);
+                }
+            }
+        }
+    } catch (e) {
+        console.error('[SimOrder] 載入 sim_orders.json 失敗:', e.message);
+    }
+}
+
+function saveSimOrders() {
+    try {
+        const arr = Array.from(simOrders.values());
+        fs.writeFileSync(SIM_ORDERS_FILE, JSON.stringify(arr, null, 2), 'utf8');
+    } catch (e) {
+        console.error('[SimOrder] 儲存 sim_orders.json 失敗:', e.message);
+    }
+}
+
+loadSimOrders();
+
+function buildSimTrackingUrl(req, orderId) {
+    const forwardedProto = req.headers['x-forwarded-proto'];
+    const proto = forwardedProto ? String(forwardedProto).split(',')[0].trim() : 'http';
+    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000';
+    return `${proto}://${host}/track/${encodeURIComponent(orderId)}`;
+}
+
+function applyStageToOrder(order, stageIndex) {
+    const safeIdx = Math.max(0, Math.min(stageIndex, ORDER_STAGES.length - 1));
+    const stage = ORDER_STAGES[safeIdx];
+    order.stageIndex = safeIdx;
+    order.status = stage.status;
+    order.statusCode = stage.status;
+    order.statusLabel = stage.label;
+    order.etaMinutes = stage.eta;
+    order.stageStartedAt = Date.now();
+    order.updatedAt = new Date().toISOString();
+    if (stage.status === 'DELIVERED') {
+        order.etaMinutes = 0;
+        order.deliveredAt = order.updatedAt;
+    }
+}
+
+function createSimOrder(payload, req) {
+    const orderId = 'sim_' + crypto.randomBytes(4).toString('hex');
+    const nowIso = new Date().toISOString();
+    const speedMultiplier = Number(payload && payload.speedMultiplier) > 0 ? Number(payload.speedMultiplier) : 1;
+
+    const order = {
+        id: orderId,
+        trackingUrl: buildSimTrackingUrl(req, orderId),
+        targetDashboard: (payload && payload.targetDashboard) ? String(payload.targetDashboard).trim() : '',
+        merchantName: (payload && payload.merchantName) ? String(payload.merchantName) : '測試外送餐廳（中和店）',
+        customerAddress: (payload && payload.customerAddress) ? String(payload.customerAddress) : '新北市中和區景平路測試地址',
+        items: Array.isArray(payload && payload.items) && payload.items.length > 0
+            ? payload.items
+            : [{ name: '模擬主餐', qty: 1 }],
+        courierName: (payload && payload.courierName) ? String(payload.courierName) : '王小明',
+        speedMultiplier: speedMultiplier,
+        paused: Boolean(payload && payload.paused),
+        stageIndex: 0,
+        status: ORDER_STAGES[0].status,
+        statusCode: ORDER_STAGES[0].status,
+        statusLabel: ORDER_STAGES[0].label,
+        etaMinutes: ORDER_STAGES[0].eta,
+        stageStartedAt: Date.now(),
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        deliveredAt: null
+    };
+
+    simOrders.set(orderId, order);
+    saveSimOrders();
+    return order;
+}
+
+// 自動推進模擬訂單狀態與真實感 ETA（每 2 秒檢查一次）
+setInterval(() => {
+    let changed = false;
+    const now = Date.now();
+
+    for (const order of simOrders.values()) {
+        if (!order || order.paused) continue;
+        const stage = ORDER_STAGES[order.stageIndex];
+        if (!stage || stage.durationSec <= 0 || order.stageIndex >= ORDER_STAGES.length - 1) {
+            continue;
+        }
+
+        const elapsedSec = ((now - (order.stageStartedAt || now)) / 1000) * (order.speedMultiplier || 1);
+        const nextEta = computeRealisticEta(order, now);
+
+        if (order.etaMinutes !== nextEta) {
+            order.etaMinutes = nextEta;
+            order.updatedAt = new Date().toISOString();
+            changed = true;
+        }
+
+        if (elapsedSec >= stage.durationSec) {
+            applyStageToOrder(order, order.stageIndex + 1);
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        saveSimOrders();
+    }
+}, 2000);
+
+function escapeHtml(str) {
+    return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function renderTrackingHtml(order) {
+    const safeId = String(order.id).replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeMerchant = escapeHtml(order.merchantName);
+    const safeCourier = escapeHtml(order.courierName || '外送合作夥伴');
+    const safeStatus = escapeHtml(order.statusCode || order.status);
+    const safeLabel = escapeHtml(order.statusLabel);
+    const safeEtaNum = Number(order.etaMinutes || 0);
+    const safeEtaText = safeStatus === 'DELIVERED' ? '已送達' : ('預計 ' + safeEtaNum + ' 分鐘送達');
+
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+        '<title>外送追蹤 - ' + safeId + '</title>' +
+        '<style>body{font-family:sans-serif;max-width:520px;margin:32px auto;padding:16px;background:#f7f8fa;color:#222}' +
+        '.card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,0.08)}' +
+        '.eta{font-size:26px;font-weight:bold;color:#06c167;margin:12px 0}' +
+        '.badge{display:inline-block;padding:4px 10px;border-radius:999px;background:#eef6f0;color:#058a49;font-size:13px}' +
+        '.meta{font-size:13px;color:#555;margin-top:8px}</style>' +
+        '</head><body><div class="card">' +
+        '<div class="badge" id="statusBadge" data-testid="order-status" data-status-code="' + safeStatus + '">' + safeLabel + ' (' + safeStatus + ')</div>' +
+        '<h2 id="merchantName">' + safeMerchant + '</h2>' +
+        '<div class="eta" data-testid="eta-string" data-eta-minutes="' + safeEtaNum + '">' + escapeHtml(safeEtaText) + '</div>' +
+        '<p id="statusLabel">' + safeLabel + '</p>' +
+        '<div class="meta">外送合作夥伴：<span id="courierName">' + safeCourier + '</span></div>' +
+        '<p style="font-size:12px;color:#666">訂單編號：<span id="orderId">' + safeId + '</span></p>' +
+        '</div><script>' +
+        'setInterval(function () {' +
+        '  var xhr = new XMLHttpRequest();' +
+        '  xhr.open("GET", "/api/sim-orders/' + safeId + '", true);' +
+        '  xhr.onreadystatechange = function () {' +
+        '    if (xhr.readyState === 4 && xhr.status === 200) {' +
+        '      var resJson = JSON.parse(xhr.responseText);' +
+        '      if (resJson && resJson.ok && resJson.order) {' +
+        '        var o = resJson.order;' +
+        '        var code = o.statusCode || o.status || "";' +
+        '        var etaMin = Number(o.etaMinutes || 0);' +
+        '        var badgeEl = document.getElementById("statusBadge");' +
+        '        var etaEl = document.querySelector("[data-testid=\\"eta-string\\"]");' +
+        '        var labelEl = document.getElementById("statusLabel");' +
+        '        if (badgeEl) {' +
+        '          badgeEl.setAttribute("data-status-code", code);' +
+        '          badgeEl.innerHTML = o.statusLabel + " (" + code + ")";' +
+        '        }' +
+        '        if (etaEl) {' +
+        '          etaEl.setAttribute("data-eta-minutes", String(etaMin));' +
+        '          etaEl.innerHTML = (code === "DELIVERED") ? "已送達" : ("預計 " + etaMin + " 分鐘送達");' +
+        '        }' +
+        '        if (labelEl) labelEl.innerHTML = o.statusLabel;' +
+        '      }' +
+        '    }' +
+        '  };' +
+        '  xhr.send();' +
+        '}, 2000);' +
+        '</script></body></html>'
+    );
+}
+
+function findSimOrderByTrackingUrl(trackingUrl) {
+    if (!trackingUrl) return null;
+    for (const order of simOrders.values()) {
+        if (order && order.trackingUrl === trackingUrl) {
+            return order;
+        }
+    }
+    const match = String(trackingUrl).match(/\/track\/([a-zA-Z0-9_-]+)/);
+    if (match && simOrders.has(match[1])) {
+        return simOrders.get(match[1]);
+    }
+    return null;
+}
+
+function handleSimOrderHttp(req, res, parsedUrl, urlPath) {
+    if (req.method === 'POST' && urlPath === '/api/sim-orders') {
+        readJsonBody(req).then((body) => {
+            const order = createSimOrder(body, req);
+            sendJsonResponse(res, 201, {
+                ok: true,
+                orderId: order.id,
+                trackingUrl: order.trackingUrl,
+                order: order
+            });
+        }).catch(() => {
+            sendJsonResponse(res, 400, { ok: false, error: '無效的 JSON 請求內容' });
+        });
+        return true;
+    }
+
+    if (req.method === 'GET' && urlPath === '/api/sim-orders') {
+        sendJsonResponse(res, 200, {
+            ok: true,
+            orders: Array.from(simOrders.values())
+        });
+        return true;
+    }
+
+    // 2.5 清除舊訂單（已完成 DELIVERED、已取消 CANCELLED）
+    if ((req.method === 'DELETE' || req.method === 'POST') && urlPath === '/api/sim-orders/cleanup') {
+        var removedCount = 0;
+        var keptCount = 0;
+        simOrders.forEach(function (order, orderId) {
+            if (!order) return;
+            var code = String(order.statusCode || order.status || '').toUpperCase();
+            if (code === 'DELIVERED' || code === 'CANCELLED') {
+                simOrders.delete(orderId);
+                removedCount++;
+            } else {
+                keptCount++;
+            }
+        });
+        saveSimOrders();
+        sendJsonResponse(res, 200, {
+            ok: true,
+            removedCount: removedCount,
+            remainingCount: keptCount
+        });
+        return true;
+    }
+
+    const apiMatch = urlPath.match(/^\/api\/sim-orders\/([a-zA-Z0-9_-]+)$/);
+    if (apiMatch) {
+        const orderId = apiMatch[1];
+        const order = simOrders.get(orderId);
+        if (!order) {
+            sendJsonResponse(res, 404, { ok: false, error: '找不到該模擬訂單' });
+            return true;
+        }
+
+        if (req.method === 'GET') {
+            sendJsonResponse(res, 200, { ok: true, order: order });
+            return true;
+        }
+
+        if (req.method === 'POST') {
+            readJsonBody(req).then((body) => {
+                if (typeof body.paused === 'boolean') {
+                    order.paused = body.paused;
+                }
+                if (typeof body.speedMultiplier === 'number' && body.speedMultiplier > 0) {
+                    order.speedMultiplier = body.speedMultiplier;
+                }
+                if (typeof body.etaMinutes === 'number') {
+                    order.etaMinutes = body.etaMinutes;
+                }
+                if (body.cancel === true || String(body.status || '').toUpperCase() === 'CANCELLED') {
+                    order.status = 'CANCELLED';
+                    order.statusCode = 'CANCELLED';
+                    order.statusLabel = '訂單已取消';
+                    order.paused = true;
+                } else if (body.status) {
+                    const idx = ORDER_STAGES.findIndex((s) => s.status === body.status);
+                    if (idx !== -1) {
+                        applyStageToOrder(order, idx);
+                    }
+                } else if (body.nextStage === true) {
+                    applyStageToOrder(order, order.stageIndex + 1);
+                }
+                order.updatedAt = new Date().toISOString();
+                saveSimOrders();
+                sendJsonResponse(res, 200, { ok: true, order: order });
+            }).catch(() => {
+                sendJsonResponse(res, 400, { ok: false, error: '無效的 JSON 請求內容' });
+            });
+            return true;
+        }
+    }
+
+    const trackMatch = urlPath.match(/^\/track\/([a-zA-Z0-9_-]+)$/);
+    if (req.method === 'GET' && trackMatch) {
+        const orderId = trackMatch[1];
+        const order = simOrders.get(orderId);
+        if (!order) {
+            res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end('<h3>找不到此追蹤訂單，可能尚未建立或已失效。</h3>');
+            return true;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(renderTrackingHtml(order));
+        return true;
+    }
+    return false;
 }
 
 const server = http.createServer((req, res) => {
@@ -159,7 +514,9 @@ const server = http.createServer((req, res) => {
         })();
         return;
     }
-
+    if (handleSimOrderHttp(req, res, parsedUrl, urlPath)) {
+        return;
+    }
     if (urlPath === '/' || urlPath === '/a.html') {
         if (tokenKey !== SECRET_KEY) {
             res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -168,7 +525,6 @@ const server = http.createServer((req, res) => {
         }
     }
 
-    // 攔截google OAuth callback
     if (urlPath === '/auth/google/callback') {
         handleGoogleOAuthCallback(parsedUrl, res);
         return;
@@ -176,7 +532,7 @@ const server = http.createServer((req, res) => {
 
     const safeRoot = path.resolve(__dirname);
     let requestedFile = urlPath === '/' ? 'A.html' : req.url.split('?')[0].substring(1);
-    
+
     if (requestedFile.toLowerCase() === 'admin.html') requestedFile = 'Admin.html';
     else if (requestedFile.toLowerCase() === 'b.html') requestedFile = 'B.html';
     else if (requestedFile.toLowerCase() === 'a.html') requestedFile = 'A.html';
@@ -205,14 +561,13 @@ const server = http.createServer((req, res) => {
     });
 });
 
-// 核心狀態管理 (無冗餘參數)
+// 核心狀態管理
 const dashboardRooms = new Map();     // dashboardId -> Set(sockets)
-const activeAdminSockets = new Set();  // 管理端連線池
-const activePhoneSockets = new Set();  // 手機端連線池 (精準對應與解除通知)
-const roomIcsUrls = new Map();         // dashboardId -> { googleUrl, iosUrl }
-const roomConfigs = new Map(); // dashboardId -> Object (例如存放房間自訂屬性、備用設定等) // 核心房間設定對應表
+const activeAdminSockets = new Set();
+const activePhoneSockets = new Set();
+const roomIcsUrls = new Map();
+const roomConfigs = new Map();
 
-// ICS訂閱檔
 function loadIcsConfig() {
     try {
         if (fs.existsSync(ICS_CONFIG_FILE)) {
@@ -235,7 +590,6 @@ function saveIcsConfig() {
 }
 loadIcsConfig();
 
-// RoomMAP檔
 function loadRoomConfig() {
     try {
         if (fs.existsSync(ROOM_CONFIG_FILE)) {
@@ -262,7 +616,7 @@ function saveRoomConfig() {
     }
 }
 loadRoomConfig();
-// 紀錄上一次檔案讀取的修改時間 (mtime)
+
 let lastRoomConfigMtime = 0;
 setInterval(() => {
     try {
@@ -275,22 +629,141 @@ setInterval(() => {
             }
         }
     } catch (e) {}
-}, 10000); // 每 10 秒檢查一次
+}, 10000);
 
 const icsCache = new Map();
 const ICS_CACHE_TTL = 30 * 60 * 1000;
 
-// Uber 外送追蹤狀態管理
-let currentTrackingUrl = null;
-let latestDeliveryData = { status: '尚未開始追蹤', eta: '--', updateTime: '' };
-let deliveryIntervalTimer = null;
+// ==========================================
+// 統一的外送追蹤工作階段管理（支援同一房號多筆訂單並行追蹤）
+// ==========================================
+// dashId -> Map(trackingUrl -> { timer, trackingUrl, latestData })
+const activeTrackingSessions = new Map();
+
+function stopUberTrackingSession(dashId, trackingUrl = null, reasonText = '已停止追蹤') {
+    const key = (dashId || 'demo_tv').trim();
+    const roomMap = activeTrackingSessions.get(key);
+    if (!roomMap) return;
+
+    if (trackingUrl) {
+        const session = roomMap.get(trackingUrl);
+        if (session && session.timer) {
+            clearInterval(session.timer);
+            session.timer = null;
+        }
+        roomMap.delete(trackingUrl);
+        if (roomMap.size === 0) {
+            activeTrackingSessions.delete(key);
+        }
+        console.log(`[Uber 追蹤] ${reasonText} (房號: ${key}, 網址: ${trackingUrl})`);
+        broadcastAdminLog(`[Uber 追蹤] ${reasonText}`, key);
+        return;
+    }
+
+    // 未指定特定 trackingUrl 時，停止該房號下所有追蹤
+    for (const [, session] of roomMap.entries()) {
+        if (session && session.timer) {
+            clearInterval(session.timer);
+            session.timer = null;
+        }
+    }
+    roomMap.clear();
+    activeTrackingSessions.delete(key);
+    console.log(`[Uber 追蹤] ${reasonText} (房號: ${key})`);
+    broadcastAdminLog(`[Uber 追蹤] ${reasonText}`, key);
+}
+
+function startUberTrackingSession(trackingUrl, targetDash) {
+    const dashId = (targetDash || 'demo_tv').trim();
+    if (!trackingUrl) return;
+
+    // 若同房號已經在追蹤同一條 trackingUrl，先清掉舊 timer 避免重複輪詢
+    stopUberTrackingSession(dashId, trackingUrl, '重新啟動同單追蹤');
+
+    if (!activeTrackingSessions.has(dashId)) {
+        activeTrackingSessions.set(dashId, new Map());
+    }
+    const roomMap = activeTrackingSessions.get(dashId);
+
+    const session = {
+        timer: null,
+        trackingUrl: trackingUrl,
+        latestData: null
+    };
+    roomMap.set(trackingUrl, session);
+
+    console.log(`[Uber 追蹤] 開始監控網址: ${trackingUrl} (房號: ${dashId}, 目前並行數: ${roomMap.size})`);
+    broadcastAdminLog(`[Uber 追蹤] 開始監控訂單進度（並行第 ${roomMap.size} 單）`, dashId);
+
+    const executeFetch = async () => {
+        // 若此 session 已被停止或移除，立即中斷
+        const currentRoomMap = activeTrackingSessions.get(dashId);
+        if (!currentRoomMap || !currentRoomMap.has(session.trackingUrl)) {
+            if (session.timer) {
+                clearInterval(session.timer);
+                session.timer = null;
+            }
+            return;
+        }
+
+        const result = await fetchUberTrackingData(session.trackingUrl);
+        if (result.success) {
+            const matchedOrder = findSimOrderByTrackingUrl(session.trackingUrl);
+            const rawStatus = String((result.data && result.data.status) || '');
+            const codeMatch = rawStatus.match(/\(([A-Z0-9_]+)\)/);
+            const statusCode = (result.data && result.data.statusCode) || (codeMatch ? codeMatch[1] : rawStatus);
+
+            const rawEta = String((result.data && result.data.eta) || '');
+            const etaMatch = rawEta.match(/(\d+)/);
+            const etaMinutes = (typeof (result.data && result.data.etaMinutes) === 'number')
+                ? result.data.etaMinutes
+                : (etaMatch ? parseInt(etaMatch[1], 10) : (statusCode === 'DELIVERED' ? 0 : null));
+
+            const normalizedPayload = Object.assign({}, result.data, {
+                success: true,
+                orderId: matchedOrder ? matchedOrder.id : (result.data.orderId || ''),
+                merchantName: matchedOrder ? matchedOrder.merchantName : (result.data.merchantName || ''),
+                statusCode: statusCode,
+                etaMinutes: etaMinutes,
+                trackingUrl: session.trackingUrl
+            });
+
+            session.latestData = normalizedPayload;
+
+            console.log(`[Uber 追蹤更新] [${normalizedPayload.orderId || session.trackingUrl}] ETA: ${normalizedPayload.eta} (${etaMinutes}m), 狀態: ${statusCode}`);
+            broadcastAdminLog(`[Uber 追蹤更新] ${normalizedPayload.orderId || ''} ETA: ${normalizedPayload.eta}, 狀態: ${statusCode}`, dashId);
+
+            const tvSockets = dashboardRooms.get(dashId);
+            if (tvSockets) {
+                for (let s of tvSockets) {
+                    if (!s.destroyed) {
+                        sendWs(s, {
+                            type: 'uber_delivery_status_update',
+                            data: normalizedPayload
+                        });
+                    }
+                }
+            }
+
+            if (statusCode === 'DELIVERED' || rawStatus.indexOf('DELIVERED') !== -1 || etaMinutes === 0) {
+                stopUberTrackingSession(dashId, session.trackingUrl, '訂單已送達，已停止該單輪詢');
+            }
+        } else {
+            console.error(`[Uber 追蹤錯誤] ${result.error}`);
+            broadcastAdminLog(`[Uber 追蹤錯誤] ${result.error}`, dashId);
+        }
+    };
+
+    executeFetch();
+    session.timer = setInterval(executeFetch, 5000);
+}
 
 function sendWs(socket, dataObj) {
     if (!socket || socket.destroyed) return;
     const jsonStr = JSON.stringify(dataObj);
     const payloadBytes = Buffer.from(jsonStr, 'utf8');
     const length = payloadBytes.length;
-    
+
     let frameHead;
     if (length < 126) {
         frameHead = Buffer.alloc(2);
@@ -377,7 +850,7 @@ function parseIcsContent(icsText, calendarType = 'ios') {
             else if (line.startsWith('DTSTART')) {
                 currentEvent.dtstart = line;
                 if (line.includes('VALUE=DATE')) {
-                    currentEvent.isAllDay = true; // 💡 標記為整天行程
+                    currentEvent.isAllDay = true;
                 }
             }
             else if (line.startsWith('DTEND')) currentEvent.dtend = line;
@@ -388,19 +861,15 @@ function parseIcsContent(icsText, calendarType = 'ios') {
     broadcastAdminLog(`[ICS 解析完畢] 類別: ${calendarType}, 總共解析出有效行程筆數: ${events.length}`, 'SYSTEM');
     return events;
 }
-// 萬國通用的動態時區解析函式（不寫死任何特定國家/城市）
+
 function parseIcsDateObj(lineStr) {
     if (!lineStr) return new Date();
-    
-    // 1. 動態擷取 ICS 中宣告的時區 ID（例如 TZID=Asia/Taipei 或 TZID=America/New_York）
     let tzid = null;
     const tzidMatch = lineStr.match(/TZID=([^:\s]+)/);
     if (tzidMatch) {
         tzid = tzidMatch[1].trim();
     }
-
     const isUtc = lineStr.endsWith('Z');
-    
     const parts = lineStr.split(':');
     const val = parts[parts.length - 1].replace('Z', '');
     if (val.length < 8) return new Date();
@@ -414,26 +883,20 @@ function parseIcsDateObj(lineStr) {
         let min = parseInt(val.substring(11, 13), 10);
         let s = parseInt(val.substring(13, 15), 10);
 
-        // 如果是絕對 UTC (Z) 或者是沒有宣告時區的浮動時間
         if (isUtc || !tzid) {
             return new Date(Date.UTC(y, m, d, h, min, s));
         } else {
-            // 2. 動態時區轉換機制：利用 Node.js 內建的 Intl 尋找該 TZID 在當下的真實偏移量
             const tentativeUtc = new Date(Date.UTC(y, m, d, h, min, s));
             try {
                 const utcDate = new Date(tentativeUtc.toLocaleString('en-US', { timeZone: 'UTC' }));
                 const tzDate = new Date(tentativeUtc.toLocaleString('en-US', { timeZone: tzid }));
                 const offsetMs = tzDate.getTime() - utcDate.getTime();
-                
-                // 將宣告的本地時間減去該時區的動態偏移量，還原為絕對 UTC 時間戳
                 return new Date(tentativeUtc.getTime() - offsetMs);
             } catch (e) {
-                // 若遇到系統不支援的罕見時區字串，安全退回原樣
                 return tentativeUtc;
             }
         }
     } else {
-        // 全天事件 (VALUE=DATE)，不帶時分秒
         return new Date(Date.UTC(y, m, d, 0, 0, 0));
     }
 }
@@ -522,11 +985,11 @@ function fetchAndParseIcs(rawUrl, calendarType, callback) {
     const now = Date.now();
     if (icsCache.has(cacheKey)) {
         const cached = icsCache.get(cacheKey);
-        if (now < cached.expireAt) { 
+        if (now < cached.expireAt) {
             console.log(`[ICS Cache 命中] 類別: ${calendarType}, 筆數: ${cached.events.length}`);
             broadcastAdminLog(`[ICS Cache 命中] 類別: ${calendarType}, 筆數: ${cached.events.length}`, 'SYSTEM');
-            callback(cached.events); 
-            return; 
+            callback(cached.events);
+            return;
         }
     }
     const client = url.startsWith('https') ? https : http;
@@ -542,15 +1005,15 @@ function fetchAndParseIcs(rawUrl, calendarType, callback) {
                 callback(events);
             } catch (e) {
                 console.error(`[ICS 解析例外錯誤] 類別: ${calendarType}`, e);
-                callback([]); 
+                callback([]);
             }
         });
     }).on('error', (err) => {
         console.error(`[ICS 下載失敗] 類別: ${calendarType}`, err);
-        callback([]); 
+        callback([]);
     });
 }
-// google OAuth相關
+
 function postFormUrlEncoded(hostname, pathName, paramsObj) {
     return new Promise((resolve, reject) => {
         const bodyStr = new URLSearchParams(paramsObj).toString();
@@ -581,7 +1044,7 @@ function postFormUrlEncoded(hostname, pathName, paramsObj) {
         tokenReq.end();
     });
 }
-// google OAuth相關
+
 function pushBindResultToDashboard(dashboardId, payload) {
     const sockets = dashboardRooms.get(dashboardId);
     if (!sockets || sockets.size === 0) {
@@ -596,7 +1059,7 @@ function pushBindResultToDashboard(dashboardId, payload) {
     }
     return sentCount > 0;
 }
-// google OAuth相關
+
 async function handleGoogleOAuthCallback(parsedUrl, res) {
     const code = parsedUrl.searchParams.get("code");
     const state = parsedUrl.searchParams.get("state");
@@ -678,7 +1141,7 @@ async function handleGoogleOAuthCallback(parsedUrl, res) {
         const userInfo = await fetchGoogleUserInfo(tokenData.access_token);
         const userEmail = userInfo.email || "";
         const userName = userInfo.name || "";
-        const accountLabel = (userName && userEmail)? `${userName} (${userEmail})`: (userEmail || userName || "Google 帳號");
+        const accountLabel = (userName && userEmail) ? `${userName} (${userEmail})` : (userEmail || userName || "Google 帳號");
         const pushed = pushBindResultToDashboard(targetDashboardId, {
             type: "google_oauth_bind_result",
             success: true,
@@ -789,7 +1252,7 @@ server.on('upgrade', (req, socket, head) => {
                 return;
             }
 
-            // 3. 手機端註冊 (直接轉發給電視端處理)
+            // 3. 手機端註冊
             if (data.type === 'register_phone') {
                 const requestedTv = (data.targetDashboard || "").trim();
                 if (!requestedTv || !dashboardRooms.has(requestedTv)) {
@@ -803,7 +1266,7 @@ server.on('upgrade', (req, socket, head) => {
                 socket.boundDashboardId = requestedTv;
                 socket.boundDeviceId = data.preferredId || null;
                 activePhoneSockets.add(socket);
-                
+
                 const tvSockets = dashboardRooms.get(requestedTv);
                 if (tvSockets) {
                     for (let tvSocket of tvSockets) {
@@ -885,7 +1348,7 @@ server.on('upgrade', (req, socket, head) => {
                 if (data.key !== ADMIN_SECRET_KEY) return;
                 const targetId = data.targetDeviceId;
                 const targetDash = data.targetDashboard;
-                
+
                 const tvSockets = dashboardRooms.get(targetDash);
                 if (tvSockets) {
                     for (let tvS of tvSockets) {
@@ -903,13 +1366,13 @@ server.on('upgrade', (req, socket, head) => {
                 return;
             }
 
-            // 8. 泛用訊息與指令轉發 (Pure Relay)
-            if (data.type === 'message' || 
-                data.type === 'calendar' || 
-                data.type === 'todo' || 
-                data.type === 'delivery_order' || 
+            // 8. 泛用訊息與指令轉發
+            if (data.type === 'message' ||
+                data.type === 'calendar' ||
+                data.type === 'todo' ||
+                data.type === 'delivery_order' ||
                 data.type === 'config_update_server_ip' ||
-                data.type.includes('traffic') || 
+                data.type.includes('traffic') ||
                 data.type.includes('phone_name_sync')) {
 
                 let targetDash = null;
@@ -958,16 +1421,14 @@ server.on('upgrade', (req, socket, head) => {
                 return;
             }
 
-            // 10. 處理手機端或管理端更新 iCal 訂閱網址的請求
+            // 10. 更新 iCal 訂閱網址
             if (data.type === 'update_ics_url') {
-                console.log("data.type === update_ics_url");
                 const targetDash = (currentClientType === 'phone') ? boundDashboardId : (data.targetDashboard || currentDashboardId);
                 if (targetDash) {
                     if (!roomIcsUrls.has(targetDash)) {
                         roomIcsUrls.set(targetDash, { iosUrl: '' });
                     }
                     const urls = roomIcsUrls.get(targetDash);
-                    
                     icsCache.delete(`ios_${urls.iosUrl}`);
 
                     let updatedCalendarType = data.calendarType || 'ios';
@@ -979,21 +1440,15 @@ server.on('upgrade', (req, socket, head) => {
                     roomIcsUrls.set(targetDash, urls);
                     saveIcsConfig();
 
-                    console.log(`[SYSTEM] 已更新房間 [${targetDash}] 的 ${updatedCalendarType} 訂閱網址`);
-                    broadcastAdminLog(`[SYSTEM] 已更新房間 [${targetDash}] 的 ${updatedCalendarType} 訂閱網址`, targetDash);
-
-                    // 【補強】：主動將手機端更新的 ICS 網址推播給該房間的所有電視端 (TV)！
                     const tvSockets = dashboardRooms.get(targetDash);
                     if (tvSockets) {
                         for (let s of tvSockets) {
                             if (!s.destroyed) {
-                                // 1. 發送信令讓電視更新本地儲存與顯示狀態
                                 sendWs(s, {
                                     type: 'update_ics_url',
                                     calendarType: updatedCalendarType,
                                     icsUrl: updatedIcsUrl
                                 });
-                                // 2. 同時觸發狀態回報給 Admin 更新燈號
                                 sendWs(s, { type: 'admin_query_room_status' });
                             }
                         }
@@ -1005,7 +1460,6 @@ server.on('upgrade', (req, socket, head) => {
                     const checkAndSend = () => {
                         pending--;
                         if (pending <= 0) {
-                            broadcastAdminLog(`[SYSTEM] 網址更新後即時抓取完成，共 ${allEvents.length} 筆，主動推播給電視`, targetDash);
                             if (tvSockets) {
                                 for (let s of tvSockets) {
                                     if (!s.destroyed) {
@@ -1037,8 +1491,8 @@ server.on('upgrade', (req, socket, head) => {
                 }
                 return;
             }
-            
-            // 11. 處理電視端或前台要求手動觸發 ICS 同步的請求
+
+            // 11. 手動觸發 ICS 同步
             if (data.type === 'request_ics_sync') {
                 const targetDash = data.dashboard || data.targetDashboard || currentDashboardId || 'demo_tv';
                 if (data.iosIcsUrl && String(data.iosIcsUrl).trim()) {
@@ -1048,12 +1502,9 @@ server.on('upgrade', (req, socket, head) => {
                     icsCache.delete(`ios_${currentCfg.iosUrl}`);
                     saveIcsConfig();
                 }
-                console.log(`[SYSTEM] 收到房號 [${targetDash}] 的 ICS 同步請求，開始抓取...`);
-                broadcastAdminLog(`[SYSTEM] 收到房號 [${targetDash}] 的 ICS 同步請求，開始抓取...`, targetDash);
 
                 const urls = roomIcsUrls.get(targetDash);
                 if (!urls || !urls.iosUrl) {
-                    broadcastAdminLog(`[SYSTEM] 房號 [${targetDash}] 沒有設定任何 ICS 網址`, targetDash);
                     sendWs(socket, { type: 'ics_sync_result', calendars: [] });
                     return;
                 }
@@ -1064,7 +1515,6 @@ server.on('upgrade', (req, socket, head) => {
                 const checkAndSend = () => {
                     pending--;
                     if (pending <= 0) {
-                        broadcastAdminLog(`[SYSTEM] 房號 [${targetDash}] 的 ICS 同步完成，共 ${allEvents.length} 筆`, targetDash);
                         sendWs(socket, { type: 'ics_sync_result', calendars: allEvents });
                     }
                 };
@@ -1080,139 +1530,74 @@ server.on('upgrade', (req, socket, head) => {
                 return;
             }
 
-            // 12. 處理管理端要求清除ICS快取的請求
+            // 12. 清除 ICS 快取
             if (data.type === 'admin_clear_ics_cache') {
                 if (data.key !== ADMIN_SECRET_KEY) {
                     sendWs(socket, { type: 'auth_error', message: '認證失敗：管理員金鑰錯誤' });
                     return;
                 }
                 icsCache.clear();
-                console.log(`[SYSTEM] 管理員已強制清除所有 ICS 快取 (icsCache cleared)`);
-                broadcastAdminLog(`[SYSTEM] 管理員已成功清除所有 ICS 快取`);
-
                 for (let [dashId, sockets] of dashboardRooms.entries()) {
                     const urls = roomIcsUrls.get(dashId);
-                    if (urls) {
-                        let allEvents = [];
-                        let pending = 0;
-                        const sendMerged = () => {
-                            pending--;
-                            if (pending <= 0) {
-                                for (let s of sockets) {
-                                    if (!s.destroyed) {
-                                        sendWs(s, { type: 'ics_sync_result', calendars: allEvents });
-                                    }
+                    if (urls && urls.iosUrl) {
+                        fetchAndParseIcs(urls.iosUrl, 'ios', (events) => {
+                            for (let s of sockets) {
+                                if (!s.destroyed) {
+                                    sendWs(s, { type: 'ics_sync_result', calendars: events });
                                 }
-                                console.log(`[SYSTEM] 已自動重新抓取房號 [${dashId}] 的最新行程並推播給電視`);
-                                broadcastAdminLog(`[SYSTEM] 已自動重新抓取房號 [${dashId}] 的最新行程並推播給電視`, dashId);
                             }
-                        };
-
-                        if (urls.iosUrl) {
-                            pending++;
-                            fetchAndParseIcs(urls.iosUrl, 'ios', (events) => { allEvents = allEvents.concat(events); sendMerged(); });
-                        }
+                        });
                     }
                 }
                 sendWs(socket, { type: 'admin_action_success', message: 'ICS 快取已清除, 且已自動推播最新行程至在線電視' });
                 return;
             }
 
-            // 13. 啟動 Uber 外送追蹤
+            // 13. 啟動外送追蹤（走統一工作階段函式）
             if (data.type === 'start_uber_tracking') {
                 const trackingUrl = data.trackingUrl;
-                const targetDash = data.targetDashboard || currentDashboardId || 'demo_tv';
+                const targetDash = (data.targetDashboard || currentDashboardId || 'demo_tv').trim();
 
                 if (!trackingUrl) {
                     sendWs(socket, { type: 'error', message: '追蹤失敗：未提供 Tracking URL' });
                     return;
                 }
 
-                currentTrackingUrl = trackingUrl;
-                console.log(`[Uber 追蹤] 開始監控網址: ${trackingUrl}`);
-                broadcastAdminLog(`[Uber 追蹤] 開始監控訂單進度`, targetDash);
-
-                // 立即執行一次抓取
-                const executeFetch = async () => {
-                    const result = await fetchUberTrackingData(currentTrackingUrl);
-                    if (result.success) {
-                        latestDeliveryData = { ...result.data, success: true };
-                        console.log(`[Uber 追蹤更新] ETA: ${latestDeliveryData.eta}, 狀態: ${latestDeliveryData.status}`);
-                        
-                        // 主動推播給該房間的所有電視端連線
-                        const tvSockets = dashboardRooms.get(targetDash);
-                        if (tvSockets) {
-                            for (let s of tvSockets) {
-                                if (!s.destroyed) {
-                                    sendWs(s, {
-                                        type: 'uber_delivery_status_update',
-                                        data: latestDeliveryData
-                                    });
-                                }
-                            }
-                        }
-                    } else {
-                        console.error(`[Uber 追蹤錯誤] ${result.error}`);
-                        broadcastAdminLog(`[Uber 追蹤錯誤] ${result.error}`, targetDash);
-                    }
-                };
-
-                // 執行第一次
-                executeFetch();
-
-                // 清除舊的計時器（如果有的話），設定每 45 秒自動輪詢一次
-                if (deliveryIntervalTimer) clearInterval(deliveryIntervalTimer);
-                deliveryIntervalTimer = setInterval(executeFetch, 45000);
-
+                startUberTrackingSession(trackingUrl, targetDash);
                 return;
             }
 
-            // 14. 停止 Uber 外送追蹤
+            // 14. 停止外送追蹤
             if (data.type === 'stop_uber_tracking') {
-                if (deliveryIntervalTimer) {
-                    clearInterval(deliveryIntervalTimer);
-                    deliveryIntervalTimer = null;
-                }
-                currentTrackingUrl = null;
-                latestDeliveryData = { status: '已停止追蹤', eta: '--', updateTime: '' };
-                console.log(`[Uber 追蹤] 已停止監控`);
-                broadcastAdminLog(`[Uber 追蹤] 已停止監控`, currentDashboardId);
+                const targetDash = (data.targetDashboard || currentDashboardId || 'demo_tv').trim();
+                const specificUrl = data.trackingUrl ? String(data.trackingUrl).trim() : null;
+                stopUberTrackingSession(targetDash, specificUrl, '已停止追蹤');
                 return;
             }
 
-            // 💡 15. 處理電視端主動同步設定檔 (Config Sync) 的請求
+            // 15. 同步房間設定檔
             if (data.type === 'sync_room_config') {
                 const targetDash = data.dashboardId || currentDashboardId;
                 if (targetDash) {
-                    console.log(`[SYSTEM] 收到來自房號 [${targetDash}] 的設定檔同步請求`);
-                    
-                    // 1. 同步 ICS 訂閱網址
                     if (typeof data.iosUrl === 'string') {
-                        roomIcsUrls.set(targetDash, {
-                            iosUrl: data.iosUrl.trim()
-                        });
-                        saveIcsConfig(); // 寫入 ics_config.json
+                        roomIcsUrls.set(targetDash, { iosUrl: data.iosUrl.trim() });
+                        saveIcsConfig();
                     }
-
-                    // 2. 同步房間自訂設定 (Room Config)
                     if (data.roomConfig) {
                         roomConfigs.set(targetDash, data.roomConfig);
-                        saveRoomConfig(); // 寫入 room_config.json
+                        saveRoomConfig();
                     }
-
-                    // 回覆電視同步完成
-                    sendWs(socket, { 
-                        type: 'sync_room_config_result', 
-                        success: true, 
-                        message: '伺服器設定已與電視端對齊成功' 
+                    sendWs(socket, {
+                        type: 'sync_room_config_result',
+                        success: true,
+                        message: '伺服器設定已與電視端對齊成功'
                     });
-                    
                     broadcastAdminLog(`[SYSTEM] 房號 [${targetDash}] 設定檔已成功與伺服器對齊`, targetDash);
                 }
                 return;
             }
 
-            // 產生 Google OAuth 綁定授權網址與 state
+            // Google OAuth 授權網址
             if (data.type === 'request_google_auth_url') {
                 const targetDash = (data.dashboardId || currentDashboardId || 'demo_tv').trim();
                 if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
@@ -1242,9 +1627,6 @@ server.on('upgrade', (req, socket, head) => {
                 });
 
                 const authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" + authParams.toString();
-                console.log(`[Google OAuth] 為房號 [${targetDash}] 產生授權網址, state=${state}`);
-                broadcastAdminLog(`[Google OAuth] 產生綁定授權網址 (state=${state.substring(0, 8)}...)`, targetDash);
-
                 sendWs(socket, {
                     type: 'google_auth_url_result',
                     authUrl: authUrl,
@@ -1253,7 +1635,7 @@ server.on('upgrade', (req, socket, head) => {
                 });
                 return;
             }
-            
+
             if (data.type === 'ping') {
                 sendWs(socket, { type: 'pong' });
                 return;
@@ -1270,7 +1652,7 @@ server.on('upgrade', (req, socket, head) => {
             if (dashboardRooms.get(currentDashboardId).size === 0) dashboardRooms.delete(currentDashboardId);
             broadcastAdminStatus();
         }
-        
+
         if (currentClientType === 'phone' && boundDashboardId && boundDeviceId) {
             const tvSockets = dashboardRooms.get(boundDashboardId);
             if (tvSockets) {

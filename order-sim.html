@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>模擬外送下單控制台 (order-sim.html)</title>
+  <style>
+    body { font-family: sans-serif; max-width: 780px; margin: 24px auto; padding: 16px; background: #f4f6f9; color: #222; }
+    .card { background: #fff; border-radius: 10px; padding: 18px; margin-bottom: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+    .row { margin-bottom: 12px; }
+    label { display: block; font-size: 14px; font-weight: bold; margin-bottom: 4px; }
+    label.inline-check { font-weight: normal; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    input[type="text"], select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+    button { padding: 7px 12px; border: none; border-radius: 6px; background: #06c167; color: #fff; font-size: 13px; cursor: pointer; margin-right: 6px; margin-top: 4px; }
+    button.secondary { background: #4b5563; }
+    button.warn { background: #d97706; }
+    button.danger { background: #dc2626; }
+    .list-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+    .list-header h3 { margin: 0; }
+    .ws-bar { font-size: 13px; margin-bottom: 12px; padding: 8px 10px; border-radius: 6px; background: #f1f5f9; }
+    .result-box { background: #eefaf3; border: 1px solid #86efac; border-radius: 8px; padding: 12px; margin-top: 12px; word-break: break-all; }
+    .order-item { border-top: 1px solid #eee; padding: 14px 0; font-size: 13px; }
+    .status-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #eef6f0; color: #058a49; font-weight: bold; font-size: 12px; }
+    .status-pill.paused { background: #fef3c7; color: #b45309; }
+    .status-pill.delivered { background: #e0e7ff; color: #3730a3; }
+    .status-pill.cancelled { background: #fee2e2; color: #b91c1c; }
+    .ctrl-bar { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .ctrl-bar select { width: auto; min-width: 210px; padding: 6px 8px; font-size: 13px; }
+
+    /* 外送狀態流程圖樣式 */
+    .flow-box { margin-top: 10px; padding: 10px 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+    .flow-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; color: #475569; margin-bottom: 8px; }
+    .flow-steps { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; }
+    .flow-step { flex: 1 1 110px; min-width: 105px; border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; padding: 7px 8px; font-size: 11px; line-height: 1.35; position: relative; }
+    .flow-step.done { border-color: #86efac; background: #f0fdf4; color: #166534; }
+    .flow-step.active { border: 2px solid #06c167; background: #ecfdf5; color: #064e3b; box-shadow: 0 0 0 2px rgba(6, 193, 103, 0.12); }
+    .flow-step.cancelled-step { border-color: #fca5a5; background: #fef2f2; color: #991b1b; }
+    .flow-step-title { font-weight: bold; font-size: 11px; margin-bottom: 2px; }
+    .flow-step-badge { display: inline-block; font-size: 10px; font-weight: bold; padding: 1px 5px; border-radius: 4px; background: #06c167; color: #fff; margin-bottom: 3px; }
+    .flow-step.done .flow-step-badge { background: #16a34a; }
+    .flow-step.cancelled-step .flow-step-badge { background: #dc2626; }
+    .flow-step-time { color: #334155; font-size: 11px; margin-top: 2px; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>建立模擬外送訂單</h2>
+    <div id="wsStatusBar" class="ws-bar">WebSocket 連線狀態：連線中...</div>
+    <form id="orderForm">
+      <div class="row">
+        <label>餐廳名稱</label>
+        <input type="text" id="merchantName" value="測試外送餐廳（中和店）">
+      </div>
+      <div class="row">
+        <label>餐點名稱</label>
+        <input type="text" id="itemName" value="招牌套餐">
+      </div>
+      <div class="row">
+        <label>外送合作夥伴名稱</label>
+        <input type="text" id="courierName" value="王小明">
+      </div>
+      <div class="row">
+        <label>模擬推進倍速（1x 為真實 20 分鐘外送節奏）</label>
+        <select id="speedMultiplier">
+          <option value="1" selected>1x（真實外送節奏，約 20 分鐘）</option>
+          <option value="5">5x（較快測試，約 4 分鐘）</option>
+          <option value="15">15x（快速測試，約 80 秒）</option>
+          <option value="30">30x（極速測試，約 40 秒）</option>
+        </select>
+      </div>
+      <div class="row">
+        <label class="inline-check">
+          <input type="checkbox" id="startPaused" checked>
+          <span><b>建立時先暫停自動推進</b>（改由下方按鈕手動逐步切換階段，方便測試每個狀態）</span>
+        </label>
+      </div>
+      <div class="row">
+        <label class="inline-check">
+          <input type="checkbox" id="autoTrack" checked>
+          <span>填寫電視房號時，下單後透過 WebSocket 啟動追蹤推播</span>
+        </label>
+      </div>
+      <div class="row">
+        <label>目標電視房號</label>
+        <input type="text" id="targetDashboard" placeholder="例如 dash-JKY2026NVT676">
+      </div>
+      <button type="submit">立即下單並產生 Tracking URL</button>
+      <button type="button" class="secondary" onclick="startSelectedTracking()">手動 WS 啟動追蹤</button>
+      <button type="button" class="danger" onclick="stopTrackingViaWs()">WS 停止追蹤</button>
+    </form>
+    <div id="resultBox" class="result-box" style="display:none"></div>
+  </div>
+
+  <div class="card">
+    <div class="list-header">
+      <h3>目前模擬訂單清單</h3>
+      <div>
+        <button type="button" class="secondary" onclick="loadOrderList()">重新整理</button>
+        <button type="button" class="danger" onclick="cleanupFinishedOrders()">清除舊訂單（已完成/已取消）</button>
+      </div>
+    </div>
+    <div id="orderList">載入中...</div>
+  </div>
+
+  <script>
+    var latestTrackingUrl = "";
+    var ws = null;
+    var wsReady = false;
+    var pendingWsMessages = [];
+    var STORAGE_KEY_DASH = "order_sim_target_dashboard";
+
+    // 對齊 server.js 的 6 個外送階段與預設秒數（1x 基準）
+    var FLOW_STAGES = [
+      { code: "ORDER_PLACED", shortName: "等待接單", label: "已送出訂單，等待餐廳接單", baseSec: 60, eta: 20 },
+      { code: "PREPARING", shortName: "餐廳備餐", label: "餐廳正在準備您的餐點", baseSec: 360, eta: 19 },
+      { code: "COURIER_TO_STORE", shortName: "前往餐廳", label: "外送合作夥伴正前往餐廳", baseSec: 240, eta: 13 },
+      { code: "PICKING_UP", shortName: "正在取餐", label: "外送合作夥伴正在餐廳取餐", baseSec: 120, eta: 9 },
+      { code: "EN_ROUTE_TO_DROPOFF", shortName: "外送前往中", label: "外送合作夥伴正前往您的地點", baseSec: 420, eta: 7 },
+      { code: "DELIVERED", shortName: "餐點已送達", label: "餐點已送達", baseSec: 0, eta: 0 }
+    ];
+
+    function escapeHtml(str) {
+      return String(str || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function formatTimeShort(isoOrMs) {
+      if (!isoOrMs) return "--:--:--";
+      var d = new Date(isoOrMs);
+      if (isNaN(d.getTime())) return "--:--:--";
+      var hh = String(d.getHours()).padStart(2, "0");
+      var mm = String(d.getMinutes()).padStart(2, "0");
+      var ss = String(d.getSeconds()).padStart(2, "0");
+      return hh + ":" + mm + ":" + ss;
+    }
+
+    function formatSecondsReadable(sec) {
+      if (!sec || sec <= 0) return "完成 / 0 分鐘";
+      var rounded = Math.max(1, Math.round(sec));
+      if (rounded < 60) {
+        return "約 " + rounded + " 秒";
+      }
+      var mins = (rounded / 60).toFixed(1).replace(/\.0$/, "");
+      return "約 " + mins + " 分鐘 (" + rounded + "s)";
+    }
+
+    function buildStageDurationText(baseSec, speedMultiplier) {
+      if (!baseSec || baseSec <= 0) {
+        return "送達終點";
+      }
+      var speed = Number(speedMultiplier) > 0 ? Number(speedMultiplier) : 1;
+      var effectiveSec = baseSec / speed;
+      if (speed > 1) {
+        return formatSecondsReadable(effectiveSec) + " [1x:" + Math.round(baseSec / 60) + "m]";
+      }
+      return formatSecondsReadable(effectiveSec);
+    }
+
+    function renderOrderFlowDiagram(order) {
+      var code = String(order.statusCode || order.status || "ORDER_PLACED").toUpperCase();
+      var speed = Number(order.speedMultiplier) > 0 ? Number(order.speedMultiplier) : 1;
+      var isCancelled = (code === "CANCELLED");
+
+      var currentIdx = 0;
+      if (typeof order.stageIndex === "number" && order.stageIndex >= 0) {
+        currentIdx = Math.min(order.stageIndex, FLOW_STAGES.length - 1);
+      } else {
+        for (var k = 0; k < FLOW_STAGES.length; k++) {
+          if (FLOW_STAGES[k].code === code) {
+            currentIdx = k;
+            break;
+          }
+        }
+      }
+
+      var totalBaseSec = 0;
+      for (var t = 0; t < FLOW_STAGES.length; t++) {
+        totalBaseSec += (FLOW_STAGES[t].baseSec || 0);
+      }
+      var totalEffectiveSec = totalBaseSec / speed;
+
+      var createdTimeStr = formatTimeShort(order.createdAt);
+      var stageStartStr = formatTimeShort(order.stageStartedAt || order.updatedAt || order.createdAt);
+      var currentStageObj = FLOW_STAGES[currentIdx] || FLOW_STAGES[0];
+      var currentStageText = isCancelled ? "CANCELLED（已取消）" : (currentStageObj.code + " - " + currentStageObj.shortName);
+
+      var html = '<div class="flow-box">';
+      html += '<div class="flow-meta">';
+      html += '<div><b>開始時間：</b>' + escapeHtml(createdTimeStr) + '（本階段開始：' + escapeHtml(stageStartStr) + '）</div>';
+      html += '<div><b>目前階段：</b>' + escapeHtml(currentStageText) + '</div>';
+      html += '<div><b>全程預計（' + escapeHtml(String(speed)) + 'x）：</b>' + escapeHtml(formatSecondsReadable(totalEffectiveSec)) + '</div>';
+      html += '</div>';
+
+      html += '<div class="flow-steps">';
+      for (var i = 0; i < FLOW_STAGES.length; i++) {
+        var st = FLOW_STAGES[i];
+        var stepClass = "flow-step";
+        var badgeText = "";
+
+        if (isCancelled) {
+          if (i < currentIdx) {
+            stepClass += " done";
+            badgeText = "已完成";
+          } else if (i === currentIdx) {
+            stepClass += " cancelled-step";
+            badgeText = "已取消";
+          } else {
+            badgeText = "未執行";
+          }
+        } else {
+          if (code === "DELIVERED" || i < currentIdx) {
+            stepClass += " done";
+            badgeText = (code === "DELIVERED" && i === FLOW_STAGES.length - 1) ? "已送達" : "已完成";
+          } else if (i === currentIdx) {
+            stepClass += " active";
+            badgeText = "目前階段";
+          } else {
+            badgeText = "待進行";
+          }
+        }
+
+        var estText = buildStageDurationText(st.baseSec, speed);
+
+        html += '<div class="' + stepClass + '">';
+        html += '<div class="flow-step-badge">' + escapeHtml(badgeText) + '</div>';
+        html += '<div class="flow-step-title">' + (i + 1) + '. ' + escapeHtml(st.shortName) + '</div>';
+        html += '<div style="color:#64748b;font-size:10px">' + escapeHtml(st.code) + '</div>';
+        html += '<div class="flow-step-time">預計：' + escapeHtml(estText) + '</div>';
+        html += '</div>';
+      }
+      html += '</div></div>';
+      return html;
+    }
+
+    function saveDashboardIdToStorage(val) {
+      try {
+        if (window.localStorage) {
+          window.localStorage.setItem(STORAGE_KEY_DASH, String(val || "").trim());
+        }
+      } catch (e) {}
+    }
+
+    function restoreDashboardIdFromStorage() {
+      try {
+        if (window.localStorage) {
+          var saved = window.localStorage.getItem(STORAGE_KEY_DASH);
+          var inputEl = document.getElementById("targetDashboard");
+          if (saved && inputEl && !inputEl.value) {
+            inputEl.value = saved;
+          }
+        }
+      } catch (e) {}
+    }
+
+    function updateWsStatusText(text, color) {
+      var el = document.getElementById("wsStatusBar");
+      if (el) {
+        el.textContent = "WebSocket 連線狀態：" + text;
+        el.style.color = color || "#222";
+      }
+    }
+
+    function connectWs() {
+      var protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      var wsUrl = protocol + "//" + location.host;
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = function () {
+        wsReady = true;
+        updateWsStatusText("已連線 (" + wsUrl + ")", "#15803d");
+        while (pendingWsMessages.length > 0) {
+          ws.send(pendingWsMessages.shift());
+        }
+      };
+
+      ws.onclose = function () {
+        wsReady = false;
+        updateWsStatusText("已斷線，2 秒後重連...", "#b91c1c");
+        setTimeout(connectWs, 2000);
+      };
+
+      ws.onerror = function () {
+        wsReady = false;
+        updateWsStatusText("連線發生錯誤", "#b91c1c");
+      };
+    }
+
+    function sendWsMessage(obj) {
+      var raw = JSON.stringify(obj);
+      if (ws && wsReady && ws.readyState === WebSocket.OPEN) {
+        ws.send(raw);
+      } else {
+        pendingWsMessages.push(raw);
+      }
+    }
+
+    function triggerStartTrackingViaWs(trackingUrl, targetDashboard) {
+      var urlVal = (trackingUrl || "").trim();
+      var dashVal = (targetDashboard || "").trim();
+      if (!urlVal) {
+        alert("尚無 Tracking URL 可啟動追蹤！");
+        return;
+      }
+      if (!dashVal) {
+        alert("請先填寫目標電視房號（targetDashboard）！");
+        return;
+      }
+      saveDashboardIdToStorage(dashVal);
+      latestTrackingUrl = urlVal;
+      sendWsMessage({
+        type: "start_uber_tracking",
+        trackingUrl: urlVal,
+        targetDashboard: dashVal
+      });
+    }
+
+    function startSelectedTracking() {
+      var dashVal = document.getElementById("targetDashboard").value;
+      triggerStartTrackingViaWs(latestTrackingUrl, dashVal);
+    }
+
+    function stopTrackingViaWs() {
+      var dashVal = document.getElementById("targetDashboard").value.trim();
+      sendWsMessage({
+        type: "stop_uber_tracking",
+        targetDashboard: dashVal || "demo_tv"
+      });
+    }
+
+    function copyText(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      }
+    }
+
+    function updateSimOrder(orderId, patchObj) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/sim-orders/" + encodeURIComponent(orderId), true);
+      xhr.setRequestHeader("Content-Type", "application/json");
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+          loadOrderList();
+        }
+      };
+      xhr.send(JSON.stringify(patchObj));
+    }
+
+    function advanceStage(orderId) {
+      updateSimOrder(orderId, { nextStage: true });
+    }
+
+    function setOrderStage(orderId, selectId) {
+      var sel = document.getElementById(selectId);
+      if (!sel || !sel.value) return;
+      updateSimOrder(orderId, { status: sel.value });
+    }
+
+    function togglePauseOrder(orderId, currentPaused) {
+      updateSimOrder(orderId, { paused: !currentPaused });
+    }
+
+    function cancelOrder(orderId) {
+      updateSimOrder(orderId, { cancel: true });
+    }
+
+    function cleanupFinishedOrders() {
+      var xhr = new XMLHttpRequest();
+      xhr.open("DELETE", "/api/sim-orders/cleanup", true);
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+          var resJson = JSON.parse(xhr.responseText);
+          if (resJson && resJson.ok) {
+            alert("已清除 " + (resJson.removedCount || 0) + " 筆已完成/已取消的舊訂單，剩餘 " + (resJson.remainingCount || 0) + " 筆。");
+            loadOrderList();
+          }
+        }
+      };
+      xhr.send();
+    }
+
+    function buildStageSelectHtml(selectId, currentCode) {
+      var html = '<select id="' + selectId + '">';
+      for (var i = 0; i < FLOW_STAGES.length; i++) {
+        var opt = FLOW_STAGES[i];
+        var selected = (opt.code === currentCode) ? ' selected' : '';
+        html += '<option value="' + opt.code + '"' + selected + '>' + (i + 1) + '. ' + escapeHtml(opt.code) + '（' + escapeHtml(opt.shortName) + '）</option>';
+      }
+      html += '</select>';
+      return html;
+    }
+
+    function loadOrderList() {
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", "/api/sim-orders", true);
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+          var data = JSON.parse(xhr.responseText);
+          var listEl = document.getElementById("orderList");
+          if (!data.ok || !data.orders || data.orders.length === 0) {
+            listEl.innerHTML = "目前尚無模擬訂單";
+            return;
+          }
+          var html = "";
+          for (var i = data.orders.length - 1; i >= 0; i--) {
+            var o = data.orders[i];
+            var code = o.statusCode || o.status || "";
+            var isFinishedOrCancelled = (code === "DELIVERED" || code === "CANCELLED");
+            var pillClass = "status-pill";
+            if (code === "CANCELLED") {
+              pillClass += " cancelled";
+            } else if (code === "DELIVERED") {
+              pillClass += " delivered";
+            } else if (o.paused) {
+              pillClass += " paused";
+            }
+            var selectId = "stageSel_" + escapeHtml(o.id);
+            var safeUrl = escapeHtml(o.trackingUrl);
+
+            html += '<div class="order-item">';
+            html += '<div><strong>' + escapeHtml(o.id) + '</strong> - ' + escapeHtml(o.merchantName) + '（外送員：' + escapeHtml(o.courierName || "王小明") + ' | 倍速：' + escapeHtml(String(o.speedMultiplier || 1)) + 'x）</div>';
+            html += '<div style="margin:4px 0">狀態：<span class="' + pillClass + '">' + escapeHtml(code) + '</span> ' + escapeHtml(o.statusLabel) + (!isFinishedOrCancelled ? (o.paused ? ' <b>[已暫停自動推進]</b>' : ' <span style="color:#058a49">[自動倒數中]</span>') : '') + ' | ETA：<b>' + escapeHtml(String(o.etaMinutes)) + '</b> 分鐘</div>';
+            html += '<div>連結：<a href="' + safeUrl + '" target="_blank">' + safeUrl + '</a></div>';
+
+            html += renderOrderFlowDiagram(o);
+
+            html += '<div class="ctrl-bar">';
+            html += '<button type="button" onclick="advanceStage(\'' + escapeHtml(o.id) + '\')">推進下一階段</button>';
+            html += buildStageSelectHtml(selectId, code);
+            html += '<button type="button" class="secondary" onclick="setOrderStage(\'' + escapeHtml(o.id) + '\', \'' + selectId + '\')">跳至此階段</button>';
+            html += '<button type="button" class="warn" onclick="togglePauseOrder(\'' + escapeHtml(o.id) + '\', ' + (o.paused ? 'true' : 'false') + ')">' + (o.paused ? '恢復自動推進' : '暫停自動推進') + '</button>';
+            if (!isFinishedOrCancelled) {
+              html += '<button type="button" class="danger" onclick="cancelOrder(\'' + escapeHtml(o.id) + '\')">取消訂單</button>';
+            }
+            html += '<button type="button" class="secondary" onclick="triggerStartTrackingViaWs(\'' + safeUrl + '\', document.getElementById(\'targetDashboard\').value)">以此單 WS 追蹤</button>';
+            html += '</div></div>';
+          }
+          listEl.innerHTML = html;
+        }
+      };
+      xhr.send();
+    }
+
+    document.getElementById("targetDashboard").onchange = function () {
+      saveDashboardIdToStorage(this.value);
+    };
+
+    document.getElementById("orderForm").onsubmit = function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      var autoTrackEl = document.getElementById("autoTrack");
+      var startPausedEl = document.getElementById("startPaused");
+      var dashVal = document.getElementById("targetDashboard").value.trim();
+      saveDashboardIdToStorage(dashVal);
+
+      var payload = {
+        merchantName: document.getElementById("merchantName").value,
+        courierName: document.getElementById("courierName").value || "王小明",
+        items: [{ name: document.getElementById("itemName").value || "模擬餐點", qty: 1 }],
+        speedMultiplier: Number(document.getElementById("speedMultiplier").value) || 1,
+        paused: Boolean(startPausedEl && startPausedEl.checked),
+        targetDashboard: dashVal
+      };
+
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/sim-orders", true);
+      xhr.setRequestHeader("Content-Type", "application/json");
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState === 4 && xhr.status === 201) {
+          var resJson = JSON.parse(xhr.responseText);
+          if (resJson && resJson.ok) {
+            latestTrackingUrl = resJson.trackingUrl;
+            var safeResUrl = escapeHtml(resJson.trackingUrl);
+            var box = document.getElementById("resultBox");
+            box.style.display = "block";
+            box.innerHTML = '<div><b>下單成功！</b> 訂單編號：' + escapeHtml(resJson.orderId) + (payload.paused ? '（目前為暫停手動模式）' : '') + '</div>' +
+              '<div style="margin:6px 0">Tracking URL：<a href="' + safeResUrl + '" target="_blank">' + safeResUrl + '</a></div>' +
+              '<button type="button" onclick="copyText(\'' + safeResUrl + '\')">複製網址</button>' +
+              '<a href="' + safeResUrl + '" target="_blank">開啟追蹤頁</a>';
+
+            if (autoTrackEl && autoTrackEl.checked && dashVal) {
+              triggerStartTrackingViaWs(resJson.trackingUrl, dashVal);
+            }
+            loadOrderList();
+          }
+        }
+      };
+      xhr.send(JSON.stringify(payload));
+      return false;
+    };
+
+    restoreDashboardIdFromStorage();
+    connectWs();
+    loadOrderList();
+    setInterval(loadOrderList, 3000);
+  </script>
+</body>
+</html>
