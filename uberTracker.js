@@ -1,4 +1,71 @@
+const fs = require('fs');
 const puppeteer = require('puppeteer');
+
+let sharedBrowser = null;
+let browserLaunchPromise = null;
+
+function resolveExecutablePath() {
+    const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    if (envPath && fs.existsSync(envPath)) {
+        return envPath;
+    }
+    if (process.env.RENDER && fs.existsSync('/usr/bin/chromium')) {
+        return '/usr/bin/chromium';
+    }
+    return null;
+}
+
+function resetSharedBrowser() {
+    const oldBrowser = sharedBrowser;
+    sharedBrowser = null;
+    browserLaunchPromise = null;
+    if (oldBrowser) {
+        oldBrowser.close().catch(function () {});
+    }
+}
+
+async function getOrCreateBrowser() {
+    if (sharedBrowser && sharedBrowser.connected) {
+        return sharedBrowser;
+    }
+
+    if (browserLaunchPromise) {
+        return browserLaunchPromise;
+    }
+
+    const executablePath = resolveExecutablePath();
+    const launchOptions = {
+        headless: 'new',
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu'
+        ]
+    };
+
+    if (executablePath) {
+        launchOptions.executablePath = executablePath;
+    }
+
+    browserLaunchPromise = puppeteer.launch(launchOptions)
+        .then(function (browser) {
+            sharedBrowser = browser;
+            browserLaunchPromise = null;
+            browser.on('disconnected', function () {
+                if (sharedBrowser === browser) {
+                    sharedBrowser = null;
+                }
+            });
+            return browser;
+        })
+        .catch(function (err) {
+            browserLaunchPromise = null;
+            throw err;
+        });
+
+    return browserLaunchPromise;
+}
 
 function parseStatusCodeFromText(rawStatus, attrCode) {
     if (attrCode && String(attrCode).trim()) {
@@ -42,33 +109,25 @@ function parseEtaMinutesFromText(rawEta, attrMinutes, statusCode) {
     return null;
 }
 
+function isBrowserConnectionError(errMsg) {
+    const msg = String(errMsg || '').toLowerCase();
+    return (
+        msg.indexOf('target closed') !== -1 ||
+        msg.indexOf('session closed') !== -1 ||
+        msg.indexOf('connection closed') !== -1 ||
+        msg.indexOf('protocol error') !== -1 ||
+        msg.indexOf('browser is not connected') !== -1
+    );
+}
+
 async function fetchUberTrackingData(trackingUrl) {
-    let browser = null;
     let page = null;
     try {
         if (!trackingUrl || typeof trackingUrl !== 'string') {
             return { success: false, error: '無效的追蹤網址 (trackingUrl)' };
         }
 
-        const executablePath =
-            process.env.PUPPETEER_EXECUTABLE_PATH ||
-            (process.env.RENDER ? '/usr/bin/chromium' : undefined);
-
-        const launchOptions = {
-            headless: 'new',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu'
-            ]
-        };
-
-        if (executablePath) {
-            launchOptions.executablePath = executablePath;
-        }
-
-        browser = await puppeteer.launch(launchOptions);
+        const browser = await getOrCreateBrowser();
         page = await browser.newPage();
 
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -102,14 +161,17 @@ async function fetchUberTrackingData(trackingUrl) {
             updateTime: new Date().toLocaleTimeString()
         };
 
-        try { if (page) await page.close(); } catch (e) {}
-        try { if (browser) await browser.close(); } catch (e) {}
-
         return { success: true, data: normalizedData };
     } catch (error) {
-        try { if (page) await page.close(); } catch (e) {}
-        try { if (browser) await browser.close(); } catch (e) {}
-        return { success: false, error: error.message };
+        const errMsg = (error && error.message) ? error.message : String(error);
+        if (isBrowserConnectionError(errMsg)) {
+            resetSharedBrowser();
+        }
+        return { success: false, error: errMsg };
+    } finally {
+        if (page) {
+            try { await page.close(); } catch (e) {}
+        }
     }
 }
 

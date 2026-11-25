@@ -755,7 +755,7 @@ function startUberTrackingSession(trackingUrl, targetDash) {
     };
 
     executeFetch();
-    session.timer = setInterval(executeFetch, 15000);
+    session.timer = setInterval(executeFetch, 45 * 1000);
 }
 
 function sendWs(socket, dataObj) {
