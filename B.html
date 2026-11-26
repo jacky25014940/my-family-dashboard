@@ -565,7 +565,7 @@
             if (titleEl) titleEl.textContent = "📱 Simulate APP (un-registered)";
 
             const logEl = document.getElementById("log");
-            if (logEl) logEl.textContent = "System ready, please input your name and store";
+            if (logEl) logEl.textContent = "System ready, please go to settings and input your name and roomId to connect";
             document.title = "Simulated Phone Console";
             updateTvRoomInfo("NA");
             updateGoogleBindStatus(false, "");
@@ -686,7 +686,7 @@
                         }
 
                         const logEl = document.getElementById("log");
-                        if (logEl) logEl.textContent = `Success to connect：${currentRoomId} (Room Id: ${deviceId})`;
+                        if (logEl) logEl.textContent = `Success to connect (room: ${currentRoomId}) (slot: ${deviceId})`;
 
                         const titleEl = document.getElementById("deviceTitle");
                         if (titleEl) titleEl.textContent = `📱 Simulate APP: ${customName} (${deviceId})`;
@@ -931,19 +931,28 @@
             if (!titleVal || !startYmd) { alert("請填寫完整行程標題與開始日期！"); return; }
             if (endYmd < startYmd) { alert("結束日期不可早於開始日期！"); return; }
 
-            const offsetMin = getPhoneTargetOffsetMinutes();
-            const startIso = buildPhoneIsoWithOffset(startYmd, startHh, startMn, "00", offsetMin);
-            const endIso = buildPhoneIsoWithOffset(endYmd, endHh, endMn, "59", offsetMin);
+            let startIso = "";
+            let endIso = "";
+            let offsetMin = 0;
 
-            const startCheck = new Date(startIso);
-            const endCheck = new Date(endIso);
-            if (isNaN(startCheck.getTime()) || isNaN(endCheck.getTime())) {
-                alert("時間格式錯誤！");
-                return;
-            }
-            if (!isAllDay && endCheck.getTime() <= startCheck.getTime()) {
-                alert("結束時間必須晚於開始時間！");
-                return;
+            if (isAllDay) {
+                startIso = `${startYmd}T00:00:00`;
+                endIso = `${endYmd}T23:59:59`;
+            } else {
+                offsetMin = getPhoneTargetOffsetMinutes();
+                startIso = buildPhoneIsoWithOffset(startYmd, startHh, startMn, "00", offsetMin);
+                endIso = buildPhoneIsoWithOffset(endYmd, endHh, endMn, "59", offsetMin);
+
+                const startCheck = new Date(startIso);
+                const endCheck = new Date(endIso);
+                if (isNaN(startCheck.getTime()) || isNaN(endCheck.getTime())) {
+                    alert("時間格式錯誤！");
+                    return;
+                }
+                if (endCheck.getTime() <= startCheck.getTime()) {
+                    alert("結束時間必須晚於開始時間！");
+                    return;
+                }
             }
 
             let targetType = "local";
