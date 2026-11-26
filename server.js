@@ -1305,7 +1305,8 @@ server.on('upgrade', (req, socket, head) => {
                                 roomId: data.roomId,
                                 iosIcsUrl: data.iosIcsUrl,
                                 googleBound: !!data.googleBound,
-                                googleAccountLabel: data.googleAccountLabel || ''
+                                googleAccountLabel: data.googleAccountLabel || '',
+                                googleCalendars: data.googleCalendars || []
                             });
                         } else {
                             sendWs(phoneSock, { type: 'register_error', message: data.message || '註冊失敗' });

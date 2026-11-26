@@ -168,26 +168,38 @@
             <section id="tabPage-calendar" class="tab-page">
                 <div class="panel">
                     <div class="panel-title">📅 Send Calendars</div>
-                    <div class="field" style="flex:1; display:flex; flex-direction:column; gap: 0.8vh; min-height:0;">
+                    <div class="field" style="flex:1; display:flex; flex-direction:column; gap: 0.8vh; min-height:0; overflow-y:auto;">
                         <label>Title</label>
-                        <textarea id="calendarTitle" class="expand-input" placeholder="input the new title of this calendar..."></textarea>
-                        <label>Start from</label>
-                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #e2e8f0; margin-top: 4px;">
+                        <textarea id="calendarTitle" class="expand-input" style="min-height: 7vh;" placeholder="input the new title of this calendar..."></textarea>
+
+                        <label>Target Calendar</label>
+                        <select id="calTargetSelect">
+                            <option value="local">🏠 Local Calendar (TV)</option>
+                        </select>
+
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #e2e8f0; margin-top: 2px;">
                             <input id="calAllDayCheckbox" type="checkbox" style="width: auto;" onchange="togglePhoneAllDay()">
                             <span>All day</span>
                         </label>
+
+                        <label>Start</label>
                         <div style="display: flex; flex-direction: column; gap: 0.6vh; width: 100%;">
-                            <input id="calDate" type="date">
-                            <div style="display: flex; gap: 1vw; align-items: center; width: 100%;">
-                                <select id="calHour" style="flex: 1; text-align: center;"></select>
+                            <input id="calStartDate" type="date" onchange="syncPhoneEndDateIfNeeded()">
+                            <div id="calStartTimeRow" style="display: flex; gap: 1vw; align-items: center; width: 100%;">
+                                <select id="calStartHour" style="flex: 1; text-align: center;" onchange="syncPhoneEndTimeIfNeeded()"></select>
                                 <span class="time-colon">:</span>
-                                <select id="calMinute" style="flex: 1; text-align: center;"></select>
+                                <select id="calStartMinute" style="flex: 1; text-align: center;" onchange="syncPhoneEndTimeIfNeeded()"></select>
                             </div>
                         </div>
-                        <div id="calTimeRow" style="display: flex; gap: 1vw; align-items: center; width: 100%;">
-                            <select id="calHour" style="flex: 1; text-align: center;"></select>
-                            <span class="time-colon">:</span>
-                            <select id="calMinute" style="flex: 1; text-align: center;"></select>
+
+                        <label>End</label>
+                        <div style="display: flex; flex-direction: column; gap: 0.6vh; width: 100%;">
+                            <input id="calEndDate" type="date">
+                            <div id="calEndTimeRow" style="display: flex; gap: 1vw; align-items: center; width: 100%;">
+                                <select id="calEndHour" style="flex: 1; text-align: center;"></select>
+                                <span class="time-colon">:</span>
+                                <select id="calEndMinute" style="flex: 1; text-align: center;"></select>
+                            </div>
                         </div>
                     </div>
                     <button onclick="sendCalendar()" style="width:100%;">Send</button>
@@ -279,6 +291,132 @@
         let ws = null;
         let hourOffset = 0;
         let phonePingTimer = null;
+        let availableGoogleCalendars = [];
+
+        function renderPhoneCalendarTargetOptions(calList) {
+            availableGoogleCalendars = Array.isArray(calList) ? calList : [];
+            const sel = document.getElementById("calTargetSelect");
+            if (!sel) return;
+
+            const prevVal = sel.value;
+            sel.innerHTML = "";
+
+            const localOpt = document.createElement("option");
+            localOpt.value = "local";
+            localOpt.textContent = "🏠 Local Calendar (TV)";
+            sel.appendChild(localOpt);
+
+            for (let i = 0; i < availableGoogleCalendars.length; i++) {
+                const c = availableGoogleCalendars[i];
+                if (!c || !c.calendarId) continue;
+                const opt = document.createElement("option");
+                opt.value = "google::" + (c.accountKey || "") + "::" + c.calendarId;
+                opt.textContent = "📅 Google: " + (c.label || c.calendarSummary || c.calendarId);
+                opt.dataset.accountKey = c.accountKey || "";
+                opt.dataset.calendarId = c.calendarId;
+                opt.dataset.calendarSummary = c.calendarSummary || c.label || c.calendarId;
+                sel.appendChild(opt);
+            }
+
+            if (prevVal && Array.from(sel.options).some(o => o.value === prevVal)) {
+                sel.value = prevVal;
+            }
+        }
+
+        function fillHourMinuteSelect(hourId, minId) {
+            const hourSelect = document.getElementById(hourId);
+            if (hourSelect && hourSelect.children.length === 0) {
+                for (let h = 0; h < 24; h++) {
+                    const hStr = String(h).padStart(2, '0');
+                    const opt = document.createElement("option");
+                    opt.value = hStr;
+                    opt.textContent = hStr;
+                    hourSelect.appendChild(opt);
+                }
+            }
+            const minSelect = document.getElementById(minId);
+            if (minSelect && minSelect.children.length === 0) {
+                for (let m = 0; m < 60; m++) {
+                    const mStr = String(m).padStart(2, '0');
+                    const opt = document.createElement("option");
+                    opt.value = mStr;
+                    opt.textContent = mStr;
+                    minSelect.appendChild(opt);
+                }
+            }
+        }
+
+        function initPhoneCalendarDateTimeDefaults() {
+            fillHourMinuteSelect("calStartHour", "calStartMinute");
+            fillHourMinuteSelect("calEndHour", "calEndMinute");
+
+            const now = new Date();
+            const endDefault = new Date(now.getTime() + 60 * 60 * 1000);
+            const fmtYmd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+
+            const startDateEl = document.getElementById("calStartDate");
+            const startHourEl = document.getElementById("calStartHour");
+            const startMinEl = document.getElementById("calStartMinute");
+            const endDateEl = document.getElementById("calEndDate");
+            const endHourEl = document.getElementById("calEndHour");
+            const endMinEl = document.getElementById("calEndMinute");
+
+            if (startDateEl) startDateEl.value = fmtYmd(now);
+            if (startHourEl) startHourEl.value = String(now.getHours()).padStart(2, '0');
+            if (startMinEl) startMinEl.value = String(now.getMinutes()).padStart(2, '0');
+
+            if (endDateEl) endDateEl.value = fmtYmd(endDefault);
+            if (endHourEl) endHourEl.value = String(endDefault.getHours()).padStart(2, '0');
+            if (endMinEl) endMinEl.value = String(endDefault.getMinutes()).padStart(2, '0');
+        }
+
+        function syncPhoneEndDateIfNeeded() {
+            const startDateEl = document.getElementById("calStartDate");
+            const endDateEl = document.getElementById("calEndDate");
+            if (startDateEl && endDateEl && startDateEl.value) {
+                if (!endDateEl.value || endDateEl.value < startDateEl.value) {
+                    endDateEl.value = startDateEl.value;
+                }
+            }
+        }
+
+        function syncPhoneEndTimeIfNeeded() {
+            const allDayEl = document.getElementById("calAllDayCheckbox");
+            if (allDayEl && allDayEl.checked) return;
+
+            const startDateEl = document.getElementById("calStartDate");
+            const endDateEl = document.getElementById("calEndDate");
+            const startHourEl = document.getElementById("calStartHour");
+            const startMinEl = document.getElementById("calStartMinute");
+            const endHourEl = document.getElementById("calEndHour");
+            const endMinEl = document.getElementById("calEndMinute");
+            if (!startDateEl || !endDateEl || !startHourEl || !startMinEl || !endHourEl || !endMinEl) return;
+
+            if (startDateEl.value && endDateEl.value === startDateEl.value) {
+                const startMins = parseInt(startHourEl.value, 10) * 60 + parseInt(startMinEl.value, 10);
+                const endMins = parseInt(endHourEl.value, 10) * 60 + parseInt(endMinEl.value, 10);
+                if (endMins <= startMins) {
+                    const nextMins = Math.min(23 * 60 + 59, startMins + 60);
+                    endHourEl.value = String(Math.floor(nextMins / 60)).padStart(2, '0');
+                    endMinEl.value = String(nextMins % 60).padStart(2, '0');
+                }
+            }
+        }
+
+        function getPhoneTargetOffsetMinutes() {
+            const baseLocalOffset = -new Date().getTimezoneOffset();
+            const extraOffset = Number(hourOffset) || 0;
+            return Math.round(baseLocalOffset + extraOffset * 60);
+        }
+
+        function buildPhoneIsoWithOffset(ymdStr, hhStr, mmStr, ssStr, offsetMinutes) {
+            const totalMin = Math.round(Number(offsetMinutes) || 0);
+            const sign = totalMin >= 0 ? '+' : '-';
+            const absMin = Math.abs(totalMin);
+            const offH = String(Math.floor(absMin / 60)).padStart(2, '0');
+            const offM = String(absMin % 60).padStart(2, '0');
+            return `${ymdStr}T${hhStr}:${mmStr}:${ssStr}${sign}${offH}:${offM}`;
+        }
 
         function switchTab(tabName) {
             const tabs = ['message', 'calendar', 'todo', 'settings'];
@@ -326,39 +464,7 @@
         }
 
         window.addEventListener('DOMContentLoaded', () => {
-            const hourSelect = document.getElementById("calHour");
-            if (hourSelect && hourSelect.children.length === 0) {
-                for (let h = 0; h < 24; h++) {
-                    let hStr = String(h).padStart(2, '0');
-                    let opt = document.createElement("option");
-                    opt.value = hStr;
-                    opt.textContent = hStr;
-                    hourSelect.appendChild(opt);
-                }
-            }
-
-            const minSelect = document.getElementById("calMinute");
-            if (minSelect && minSelect.children.length === 0) {
-                for (let m = 0; m < 60; m++) {
-                    let mStr = String(m).padStart(2, '0');
-                    let opt = document.createElement("option");
-                    opt.value = mStr;
-                    opt.textContent = mStr;
-                    minSelect.appendChild(opt);
-                }
-            }
-
-            const now = new Date();
-            const calDateInput = document.getElementById("calDate");
-            const calHourSelect = document.getElementById("calHour");
-            const calMinuteSelect = document.getElementById("calMinute");
-
-            if (calDateInput && !calDateInput.value) {
-                calDateInput.value = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-            }
-            if (calHourSelect) calHourSelect.value = String(now.getHours()).padStart(2, '0');
-            if (calMinuteSelect) calMinuteSelect.value = String(now.getMinutes()).padStart(2, '0');
-
+            initPhoneCalendarDateTimeDefaults();
             deviceId = localStorage.getItem('phone_device_id') || "";
             customName = localStorage.getItem('phone_custom_name') || "";
             let savedToken = localStorage.getItem('tv_device_token') || null;
@@ -462,7 +568,8 @@
             if (logEl) logEl.textContent = "System ready, please input your name and store";
             document.title = "Simulated Phone Console";
             updateTvRoomInfo("NA");
-            updateGoogleBindStatus(false, "")
+            updateGoogleBindStatus(false, "");
+            renderPhoneCalendarTargetOptions([]);
         }
 
         function updateStatus(status) {
@@ -595,7 +702,9 @@
                         if (ws && ws.readyState === WebSocket.OPEN && deviceId) {
                             ws.send(JSON.stringify({ type: "phone_name_sync", deviceId: deviceId, name: customName }));
                         }
-
+                        if (Array.isArray(data.googleCalendars)) {
+                            renderPhoneCalendarTargetOptions(data.googleCalendars);
+                        }
                         updateStatus("connected");
                         updateSubStatus('ws', true);
                         isRegistering = false;
@@ -637,6 +746,9 @@
                                 localStorage.removeItem('phone_ios_ics_url');
                             }
                             setIcsUiState(!!deviceId, iUrl);
+                        }
+                        if (Array.isArray(data.googleCalendars)) {
+                            renderPhoneCalendarTargetOptions(data.googleCalendars);
                         }
                         return;
                     }
@@ -766,50 +878,86 @@
 
         function togglePhoneAllDay() {
             const allDayEl = document.getElementById("calAllDayCheckbox");
-            const hourEl = document.getElementById("calHour");
-            const minEl = document.getElementById("calMinute");
-            const timeRowEl = document.getElementById("calTimeRow");
+            const startHourEl = document.getElementById("calStartHour");
+            const startMinEl = document.getElementById("calStartMinute");
+            const endHourEl = document.getElementById("calEndHour");
+            const endMinEl = document.getElementById("calEndMinute");
+            const startTimeRowEl = document.getElementById("calStartTimeRow");
+            const endTimeRowEl = document.getElementById("calEndTimeRow");
             const isAllDay = !!(allDayEl && allDayEl.checked);
 
-            if (hourEl) {
-                hourEl.disabled = isAllDay;
-                if (isAllDay) hourEl.value = "00";
+            if (startHourEl) {
+                startHourEl.disabled = isAllDay;
+                if (isAllDay) startHourEl.value = "00";
             }
-            if (minEl) {
-                minEl.disabled = isAllDay;
-                if (isAllDay) minEl.value = "00";
+            if (startMinEl) {
+                startMinEl.disabled = isAllDay;
+                if (isAllDay) startMinEl.value = "00";
             }
-            if (timeRowEl) {
-                timeRowEl.style.opacity = isAllDay ? "0.45" : "1";
+            if (endHourEl) {
+                endHourEl.disabled = isAllDay;
+                if (isAllDay) endHourEl.value = "23";
             }
-        
+            if (endMinEl) {
+                endMinEl.disabled = isAllDay;
+                if (isAllDay) endMinEl.value = "59";
+            }
+            if (startTimeRowEl) startTimeRowEl.style.opacity = isAllDay ? "0.45" : "1";
+            if (endTimeRowEl) endTimeRowEl.style.opacity = isAllDay ? "0.45" : "1";
         }
 
         function sendCalendar() {
             if (!ws || ws.readyState !== WebSocket.OPEN) { alert("未連線！"); return; }
             const titleEl = document.getElementById("calendarTitle");
-            const dateEl = document.getElementById("calDate");
-            const hourEl = document.getElementById("calHour");
-            const minEl = document.getElementById("calMinute");
+            const targetSel = document.getElementById("calTargetSelect");
+            const startDateEl = document.getElementById("calStartDate");
+            const startHourEl = document.getElementById("calStartHour");
+            const startMinEl = document.getElementById("calStartMinute");
+            const endDateEl = document.getElementById("calEndDate");
+            const endHourEl = document.getElementById("calEndHour");
+            const endMinEl = document.getElementById("calEndMinute");
             const allDayEl = document.getElementById("calAllDayCheckbox");
 
             const titleVal = titleEl ? titleEl.value.trim() : "";
-            const dateVal = dateEl ? dateEl.value : "";
+            const startYmd = startDateEl ? startDateEl.value : "";
+            const endYmd = (endDateEl && endDateEl.value) ? endDateEl.value : startYmd;
             const isAllDay = !!(allDayEl && allDayEl.checked);
-            const hourVal = isAllDay ? "00" : (hourEl ? hourEl.value : "00");
-            const minVal = isAllDay ? "00" : (minEl ? minEl.value : "00");
 
-            if (!titleVal || !dateVal) { alert("請填寫完整行程標題與日期！"); return; }
+            const startHh = isAllDay ? "00" : (startHourEl ? startHourEl.value : "00");
+            const startMn = isAllDay ? "00" : (startMinEl ? startMinEl.value : "00");
+            const endHh = isAllDay ? "23" : (endHourEl ? endHourEl.value : "23");
+            const endMn = isAllDay ? "59" : (endMinEl ? endMinEl.value : "59");
 
-            const startDate = isAllDay
-                ? new Date(dateVal + "T00:00:00")
-                : new Date(dateVal + "T" + hourVal + ":" + minVal + ":00");
+            if (!titleVal || !startYmd) { alert("請填寫完整行程標題與開始日期！"); return; }
+            if (endYmd < startYmd) { alert("結束日期不可早於開始日期！"); return; }
 
-            if (isNaN(startDate.getTime())) { alert("時間格式錯誤！"); return; }
+            const offsetMin = getPhoneTargetOffsetMinutes();
+            const startIso = buildPhoneIsoWithOffset(startYmd, startHh, startMn, "00", offsetMin);
+            const endIso = buildPhoneIsoWithOffset(endYmd, endHh, endMn, "59", offsetMin);
 
-            const endDate = isAllDay
-                ? new Date(dateVal + "T23:59:59")
-                : new Date(startDate.getTime() + 3600000);
+            const startCheck = new Date(startIso);
+            const endCheck = new Date(endIso);
+            if (isNaN(startCheck.getTime()) || isNaN(endCheck.getTime())) {
+                alert("時間格式錯誤！");
+                return;
+            }
+            if (!isAllDay && endCheck.getTime() <= startCheck.getTime()) {
+                alert("結束時間必須晚於開始時間！");
+                return;
+            }
+
+            let targetType = "local";
+            let accountKey = "";
+            let calendarId = "local";
+            let calendarSummary = "";
+
+            if (targetSel && targetSel.value && targetSel.value.startsWith("google::")) {
+                const selectedOpt = targetSel.options[targetSel.selectedIndex];
+                targetType = "google";
+                accountKey = (selectedOpt && selectedOpt.dataset.accountKey) || "";
+                calendarId = (selectedOpt && selectedOpt.dataset.calendarId) || "primary";
+                calendarSummary = (selectedOpt && selectedOpt.dataset.calendarSummary) || "";
+            }
 
             const activeRoom = getActiveTargetRoom();
             ws.send(JSON.stringify({
@@ -819,9 +967,14 @@
                 deviceId: deviceId,
                 senderName: customName,
                 title: titleVal,
-                start: startDate.toISOString(),
-                end: endDate.toISOString(),
+                start: startIso,
+                end: endIso,
                 isAllDay: isAllDay,
+                offsetMinutes: offsetMin,
+                targetType: targetType,
+                accountKey: accountKey,
+                calendarId: calendarId,
+                calendarSummary: calendarSummary,
                 timestamp: new Date().toISOString()
             }));
 
@@ -830,6 +983,7 @@
                 allDayEl.checked = false;
                 togglePhoneAllDay();
             }
+            initPhoneCalendarDateTimeDefaults();
         }
 
         function sendTodo() {
